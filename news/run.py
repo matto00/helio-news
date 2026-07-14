@@ -59,9 +59,21 @@ def story_markdown(story) -> str:
     return "\n".join(parts) or story.headline
 
 
-# 12-column grid; each story occupies a band ROW_H rows tall.
+# 12-column grid. Panel heights are CONTENT-AWARE so nothing renders cramped or
+# half-empty: a markdown panel grows with its headline count, charts get real
+# vertical room, metrics stay compact tiles.
 GRID_COLS = 12
-ROW_H = 6
+H_MD_BASE = 3            # rows for the summary paragraph
+H_PER_HEADLINE = 1      # + rows per headline line
+H_MD_MIN, H_MD_MAX = 6, 15
+H_CHART = 9
+H_METRIC = 4
+W_METRIC = 4
+
+
+def _md_height(story) -> int:
+    n_head = min(len(getattr(story, "_articles", None) or []), 6)
+    return max(H_MD_MIN, min(H_MD_MAX, H_MD_BASE + n_head * H_PER_HEADLINE))
 
 
 async def apply_plan(plan: DayPlan, config: dict, cleanup: bool = True) -> None:
@@ -117,15 +129,19 @@ async def apply_plan(plan: DayPlan, config: dict, cleanup: bool = True) -> None:
             if ticker:
                 seen_tickers.add(ticker)
 
-            # Lay out this story's band.
+            # Lay out this story's band with content-aware heights.
             has_stock = bool(chart_id or metric_id)
-            layout.append(_grid(md_id, 0, y, 6 if has_stock else GRID_COLS, ROW_H))
+            h_md = _md_height(story)
+            layout.append(_grid(md_id, 0, y, 6 if has_stock else GRID_COLS, h_md))
+            right_h = 0
             if chart_id:
-                layout.append(_grid(chart_id, 6, y, 6, 4))
+                layout.append(_grid(chart_id, 6, y, 6, H_CHART))
+                right_h += H_CHART
             if metric_id:
-                layout.append(_grid(metric_id, 6, y + (4 if chart_id else 0),
-                                    6 if chart_id else 3, 2))
-            y += ROW_H
+                layout.append(_grid(metric_id, 6, y + right_h, W_METRIC, H_METRIC))
+                right_h += H_METRIC
+            # The band is as tall as its tallest column.
+            y += max(h_md, right_h) if has_stock else h_md
 
         await helio.set_layout(dashboard_id, layout)
         print(f"· built {built} stock panels across {len(plan.stories)} stories; "
