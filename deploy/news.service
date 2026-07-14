@@ -1,0 +1,18 @@
+# helio-news daily run (systemd *user* service).
+# Install (does NOT auto-install — review first):
+#   ln -s ~/Development/helio-news/deploy/news.service ~/.config/systemd/user/
+#   ln -s ~/Development/helio-news/deploy/news.timer   ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now news.timer
+[Unit]
+Description=helio-news daily aggregation → helio dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Development/helio-news
+# HELIO_PAT + HELIO_API_BASE_URL live here (gitignored), out of code/config.
+EnvironmentFile=%h/Development/helio-news/.env
+ExecStart=%h/Development/helio-news/.venv/bin/python -m news.run
+# Needs the local ollama service reachable at the configured host.
+TimeoutStartSec=1800

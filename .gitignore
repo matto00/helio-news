@@ -1,0 +1,9 @@
+.aider*
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+state/          # daily run state (last-ingested set, dated resource ledger)
+*.log
+.playwright-mcp/

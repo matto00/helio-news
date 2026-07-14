@@ -1,0 +1,11 @@
+# Fires the daily helio-news run. Pair with news.service (same basename).
+[Unit]
+Description=Run helio-news once each morning
+
+[Timer]
+# 07:00 local, and catch up if the machine was asleep at the scheduled time.
+OnCalendar=*-*-* 07:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
