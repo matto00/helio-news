@@ -29,6 +29,15 @@ models:
   triage: "gemma4:e4b"
   planner: "gemma4:e4b"
   summarizer: "gemma4:e4b"
+  layout: "gemma4:e4b"      # sizes every panel on the grid (one call per run)
+
+# Stocks are for news that MOVES a stock — not a daily price readout. A ticker
+# only earns a chart when its story broke today; set breaking_only: false to go
+# back to charting any tech/markets story that names a watchlist company.
+stocks:
+  breaking_only: true
+  # …unless a non-breaking story is this important anyway (5 = lead story only).
+  min_importance: 5
 
 # The helio MCP server this project drives (Python spawns it over stdio; the PAT
 # lives in the server's own env, never here). Override via env HELIO_MCP_CMD /
@@ -61,11 +70,16 @@ feeds:
   sports:               # basketball / soccer / football / baseball
     weight: 1.3
     sources:
+      # ESPN gives the best breadth but its feeds carry NO images at all. CBS +
+      # Guardian are here so sports stories can still earn a hero image — a
+      # story is illustrated if ANY of its clustered articles has one.
       - { name: "ESPN Top",   url: "https://www.espn.com/espn/rss/news" }
       - { name: "ESPN NBA",   url: "https://www.espn.com/espn/rss/nba/news" }
       - { name: "ESPN NFL",   url: "https://www.espn.com/espn/rss/nfl/news" }
       - { name: "ESPN MLB",   url: "https://www.espn.com/espn/rss/mlb/news" }
       - { name: "ESPN Soccer", url: "https://www.espn.com/espn/rss/soccer/news" }
+      - { name: "CBS Sports", url: "https://www.cbssports.com/rss/headlines/" }
+      - { name: "Guardian Football", url: "https://www.theguardian.com/football/rss" }
 
   tech:                 # FAANG + general tech
     weight: 1.3

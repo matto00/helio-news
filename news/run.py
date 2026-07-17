@@ -5,7 +5,13 @@
     python -m news.run --keep           # skip cleanup of previous run's resources
 
 The dashboard is refreshed in place: previous panels are cleared and the prior
-run's dated sources/types are deleted, then today's are built fresh.
+run's sources/types are deleted, then today's are built fresh.
+
+Layout is decided by the `layout` gemma pass, not by this file: it sizes every
+panel (w × h) and `_pack` flows those sizes into non-overlapping grid positions.
+The split matters — the model is good at "this lead story deserves a big panel"
+and bad at emitting 30 non-overlapping rectangles, so it does the judgement and
+code does the geometry. If the pass fails or skips a panel, `_FALLBACK` sizes it.
 """
 
 from __future__ import annotations
@@ -18,20 +24,55 @@ from dataclasses import asdict
 from datetime import date
 
 from . import enrichers
-from .agents import enrich
+from .agents import Ollama, enrich, layout
+from .enrichers import briefing
 from .fetch import fetch_all, load_config
 from .helio_client import HelioClient
 from .plan_schema import DATA_PANEL_TYPES, DayPlan
 
 REQUIRED_DELETE_TOOLS = {"delete_panel", "delete_data_source", "delete_data_type"}
 
+GRID_COLS = 12
 
-def build_plan(config: dict) -> DayPlan:
+# Sizes used when the layout pass omits a panel or returns nothing usable.
+# Deliberately dull — this is a safety net, not the design.
+_FALLBACK = {
+    "markdown": (6, 8),
+    "chart": (6, 9),
+    "metric": (3, 4),
+    "table": (4, 7),
+    "image": (6, 8),
+}
+
+# Floors and ceilings per panel kind: (min_w, min_h, max_h). The layout pass
+# still chooses the size — these only stop a choice that can't render. The model
+# is told charts need h≥6 and mostly complies, but it has handed back 6×3 bar
+# charts, which clip their own axis labels.
+_BOUNDS = {
+    "chart": (4, 6, 24),
+    "metric": (2, 3, 5),      # a single number never needs to be tall
+    "image": (3, 5, 24),
+    "table": (3, 4, 24),
+    "markdown": (3, 5, 24),
+}
+
+# Don't stretch a shelf that's mostly empty — a lone 3-wide metric should stay a
+# tile, not balloon to full width. At this fill or above, the leftover is a
+# ragged edge worth closing rather than deliberate whitespace.
+_FILL_THRESHOLD = 7
+
+
+def _clamp(kind: str, w: int, h: int) -> tuple[int, int]:
+    min_w, min_h, max_h = _BOUNDS.get(kind, (1, 2, 24))
+    return (max(min_w, min(GRID_COLS, w)), max(min_h, min(max_h, h)))
+
+
+def build_plan(config: dict):
     articles = fetch_all(config)
     print(f"· fetched {len(articles)} fresh articles", file=sys.stderr)
     plan = enrich(articles, config, run_day=date.today())
     print(f"· gemma produced {len(plan.stories)} stories", file=sys.stderr)
-    return plan
+    return plan, articles
 
 
 def plan_to_dict(plan: DayPlan) -> dict:
@@ -39,6 +80,7 @@ def plan_to_dict(plan: DayPlan) -> dict:
         "day": plan.day.isoformat(),
         "stories": [
             {**{k: v for k, v in asdict(s).items() if k != "panels"},
+             "image": s.hero_image(),
              "panels": [asdict(p) for p in s.panels]}
             for s in plan.stories
         ],
@@ -59,24 +101,54 @@ def story_markdown(story) -> str:
     return "\n".join(parts) or story.headline
 
 
-# 12-column grid. Panel heights are CONTENT-AWARE so nothing renders cramped or
-# half-empty: a markdown panel grows with its headline count, charts get real
-# vertical room, metrics stay compact tiles.
-GRID_COLS = 12
-H_MD_BASE = 3            # rows for the summary paragraph
-H_PER_HEADLINE = 1      # + rows per headline line
-H_MD_MIN, H_MD_MAX = 6, 15
-H_CHART = 9
-H_METRIC = 4
-W_METRIC = 4
+def _fill_shelf(shelf: list[dict]) -> None:
+    """Widen a nearly-full shelf's panels to close the ragged right edge.
+
+    The layout model sizes each panel without knowing where rows will break, so
+    shelves land on 10 or 11 of 12 columns and leave a dead strip down the side.
+    Widening proportionally keeps the model's *relative* sizing — its actual
+    judgement — while making the row flush. Mutates in place."""
+    used = sum(p["w"] for p in shelf)
+    if not shelf or used >= GRID_COLS or used < _FILL_THRESHOLD:
+        return
+    for p in shelf:
+        p["w"] = max(1, round(p["w"] * GRID_COLS / used))
+    # Rounding can overshoot or undershoot; settle up on the widest panel.
+    drift = GRID_COLS - sum(p["w"] for p in shelf)
+    if drift:
+        widest = max(shelf, key=lambda p: p["w"])
+        widest["w"] = max(1, widest["w"] + drift)
+    x = 0
+    for p in shelf:
+        p["x"] = x
+        x += p["w"]
 
 
-def _md_height(story) -> int:
-    n_head = min(len(getattr(story, "_articles", None) or []), 6)
-    return max(H_MD_MIN, min(H_MD_MAX, H_MD_BASE + n_head * H_PER_HEADLINE))
+def _pack(built: list[dict], sizes: dict[int, tuple[int, int]]) -> list[dict]:
+    """Flow sized panels across the 12-column grid, left→right, wrapping to a new
+    shelf when a row is full. Order is preserved, so the plan's importance
+    ordering survives, and overlaps are impossible by construction."""
+    items: list[dict] = []
+    shelf: list[dict] = []
+    x = y = shelf_h = 0
+    for i, p in enumerate(built):
+        w, h = sizes.get(i) or _FALLBACK.get(p["kind"], (6, 8))
+        w, h = _clamp(p["kind"], w, h)
+        if x + w > GRID_COLS:
+            _fill_shelf(shelf)
+            shelf = []
+            x, y, shelf_h = 0, y + shelf_h, 0
+        item = {"panelId": p["id"], "x": x, "y": y, "w": w, "h": h}
+        items.append(item)
+        shelf.append(item)
+        x += w
+        shelf_h = max(shelf_h, h)
+    _fill_shelf(shelf)
+    return items
 
 
-async def apply_plan(plan: DayPlan, config: dict, cleanup: bool = True) -> None:
+async def apply_plan(plan: DayPlan, articles: list, config: dict,
+                     cleanup: bool = True) -> None:
     dash_name = config.get("helio", {}).get("dashboard_name", "News Overview")
     async with HelioClient.session(config) as helio:
         missing = REQUIRED_DELETE_TOOLS - await helio.tool_names()
@@ -96,60 +168,69 @@ async def apply_plan(plan: DayPlan, config: dict, cleanup: bool = True) -> None:
                   f"{gone['types']} types removed", file=sys.stderr)
 
         prefix = plan.resource_prefix()
-        layout: list[dict] = []
-        seen_tickers: set[str] = set()
-        y = 0
-        built = 0
+        built: list[dict] = []          # ordered manifest: what exists on the board
+        seen_keys: set[str] = set()     # dedupe identical data across stories
 
+        async def add_bound(sd, title: str, importance: int, note: str) -> None:
+            if sd is None or sd.key in seen_keys:
+                return
+            seen_keys.add(sd.key)
+            pid = await helio.build_bound_panel(dashboard_id, prefix, title, sd)
+            built.append({"id": pid, "kind": sd.panel_type, "title": title,
+                          "importance": importance, "chart_type": sd.chart_type,
+                          "note": note})
+
+        # ── today at a glance ────────────────────────────────────────────────
+        # Real measurements of the fetch, so this section is always populated and
+        # never model-invented. It also gives the board its metric/pie variety.
+        for sd, title, note in (
+            (briefing.volume_metric(plan, articles), "Articles scanned", "one number"),
+            (briefing.story_metric(plan, articles), "Stories today", "one number"),
+            (briefing.domain_mix(plan), "What kind of day", "pie, few slices"),
+            (briefing.source_volume(plan, articles), "Who's publishing", "bar chart"),
+        ):
+            await add_bound(sd, title, 3, note)
+
+        # ── per-story sections ───────────────────────────────────────────────
         for story in sorted(plan.stories, key=lambda s: s.importance, reverse=True):
-            # Always: one markdown panel (summary + headlines), titled by theme.
+            arts = getattr(story, "_articles", None) or []
             md_id = await helio.add_text_panel(dashboard_id, story.title(),
                                                story_markdown(story))
+            built.append({"id": md_id, "kind": "markdown", "title": story.title(),
+                          "importance": story.importance, "chart_type": None,
+                          "note": f"summary + {min(len(arts), 6)} headlines"})
 
-            # Optional stock chart/metric, deduped so a ticker charts once total.
-            chart_id = metric_id = None
-            ticker = None
             for panel in story.panels:
-                if panel.type not in DATA_PANEL_TYPES or panel.enricher() != "stock":
+                if panel.type == "image":
+                    url = story.hero_image()
+                    if url:
+                        pid = await helio.add_image_panel(dashboard_id, panel.title, url)
+                        built.append({"id": pid, "kind": "image", "title": panel.title,
+                                      "importance": story.importance,
+                                      "chart_type": None, "note": "a photo"})
                     continue
-                t = panel.data.split(":", 1)[1].upper()
-                if t in seen_tickers:
+                if panel.type not in DATA_PANEL_TYPES:
                     continue
                 sd = enrichers.resolve(panel, story)
-                if sd is None:
-                    continue
-                title = f"{t} · 30-day price" if panel.type == "chart" else f"{t} · latest"
-                pid = await helio.build_bound_panel(dashboard_id, prefix, title, sd)
-                if panel.type == "chart":
-                    chart_id = pid
-                elif panel.type == "metric":
-                    metric_id = pid
-                ticker = t
-                built += 1
-            if ticker:
-                seen_tickers.add(ticker)
+                await add_bound(sd, panel.title, story.importance,
+                                f"{len(sd.rows)} rows" if sd else "")
 
-            # Lay out this story's band with content-aware heights.
-            has_stock = bool(chart_id or metric_id)
-            h_md = _md_height(story)
-            layout.append(_grid(md_id, 0, y, 6 if has_stock else GRID_COLS, h_md))
-            right_h = 0
-            if chart_id:
-                layout.append(_grid(chart_id, 6, y, 6, H_CHART))
-                right_h += H_CHART
-            if metric_id:
-                layout.append(_grid(metric_id, 6, y + right_h, W_METRIC, H_METRIC))
-                right_h += H_METRIC
-            # The band is as tall as its tallest column.
-            y += max(h_md, right_h) if has_stock else h_md
+        # ── the layout pass sizes what we actually built ─────────────────────
+        oc = config.get("ollama", {})
+        ol = Ollama(oc.get("host", "http://localhost:11434"), oc.get("timeout_seconds", 180))
+        manifest = [{"id": i, "kind": p["kind"], "title": p["title"],
+                     "importance": p["importance"], "chart_type": p["chart_type"],
+                     "note": p["note"]}
+                    for i, p in enumerate(built)]
+        sizes = layout(ol, config.get("models", {}).get("layout", "gemma4:e4b"), manifest)
+        print(f"· layout pass sized {len(sizes)}/{len(built)} panels", file=sys.stderr)
 
-        await helio.set_layout(dashboard_id, layout)
-        print(f"· built {built} stock panels across {len(plan.stories)} stories; "
-              f"laid out {len(layout)} panels", file=sys.stderr)
+        await helio.set_layout(dashboard_id, _pack(built, sizes))
 
-
-def _grid(panel_id: str, x: int, y: int, w: int, h: int) -> dict:
-    return {"panelId": panel_id, "x": x, "y": y, "w": w, "h": h}
+        kinds = ", ".join(f"{k}×{sum(1 for p in built if p['kind'] == k)}"
+                          for k in sorted({p["kind"] for p in built}))
+        print(f"· built {len(built)} panels across {len(plan.stories)} stories "
+              f"({kinds})", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -161,7 +242,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     config = load_config()
-    plan = build_plan(config)
+    plan, articles = build_plan(config)
 
     if args.plan_only:
         print(json.dumps(plan_to_dict(plan), indent=2))
@@ -171,7 +252,7 @@ def main(argv: list[str] | None = None) -> int:
         print("No stories produced; nothing to build.", file=sys.stderr)
         return 1
 
-    asyncio.run(apply_plan(plan, config, cleanup=not args.keep))
+    asyncio.run(apply_plan(plan, articles, config, cleanup=not args.keep))
     print("✅ dashboard refreshed.", file=sys.stderr)
     return 0
 

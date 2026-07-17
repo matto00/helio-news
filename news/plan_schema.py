@@ -14,17 +14,22 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
-# Panel types helio supports (from the MCP `create_panel` enum). We use a
-# working subset; image/divider are layout-only and rarely planned.
+# Panel types helio supports (from the MCP `create_panel` enum). `image` is an
+# unbound content panel (config.imageUrl/imageFit) — no data source needed.
 DATA_PANEL_TYPES = {"metric", "chart", "table"}
 TEXT_PANEL_TYPES = {"text", "markdown"}
-ALLOWED_PANEL_TYPES = DATA_PANEL_TYPES | TEXT_PANEL_TYPES | {"divider"}
+ALLOWED_PANEL_TYPES = DATA_PANEL_TYPES | TEXT_PANEL_TYPES | {"image", "divider"}
+
+# Chart shapes helio accepts (backend RequestValidation.ValidChartTypeValues).
+# NB: setting one requires PATCHing a COMPLETE ChartAppearance — a partial
+# {"chartType": …} is rejected with a 400. See helio_client.set_chart_type.
+CHART_TYPES = {"line", "bar", "pie", "scatter"}
 
 # Enricher prefixes the planner may reference in a panel's ``data`` key. Keep in
 # sync with news.enrichers.REGISTRY. Unknown prefixes are dropped in validation.
 # Headlines and summaries are rendered into each story's markdown panel by
 # run.py (not bound data panels), so they are not enrichers.
-KNOWN_ENRICHERS = {"stock"}
+KNOWN_ENRICHERS = {"stock", "coverage"}
 
 DOMAINS = {"politics", "sports", "tech", "ai", "markets", "business", "world", "general"}
 
@@ -35,9 +40,11 @@ class PanelSpec:
 
     type: str
     title: str
-    data: str | None = None          # "<enricher>:<arg>", None for text/divider
+    data: str | None = None          # "<enricher>:<arg>", None for text/image/divider
     content: str | None = None       # inline body for text/markdown panels
-    # Optional grid hints; run.py auto-lays-out when absent.
+    chart_type: str | None = None    # line | bar | pie | scatter (chart panels)
+    image_url: str | None = None     # image panels only
+    # Grid hints. The layout pass sets these; run.py packs them into the grid.
     w: int | None = None
     h: int | None = None
 
@@ -65,11 +72,14 @@ class PanelSpec:
         if ptype in TEXT_PANEL_TYPES and not content:
             return None
 
+        chart_type = str(raw.get("chart_type") or raw.get("chartType") or "").strip().lower()
+
         return cls(
             type=ptype,
             title=title[:80],
             data=data if isinstance(data, str) else None,
             content=str(content) if content else None,
+            chart_type=chart_type if chart_type in CHART_TYPES else None,
             w=_as_int(raw.get("w")),
             h=_as_int(raw.get("h")),
         )
@@ -84,6 +94,7 @@ class StorySpec:
     domain: str
     subject: str = ""                 # short theme, used as the panel/section title
     importance: int = 3               # 1 (minor) .. 5 (lead)
+    breaking: bool = False            # new/developing today (vs. ongoing coverage)
     summary: str = ""
     article_urls: list[str] = field(default_factory=list)
     panels: list[PanelSpec] = field(default_factory=list)
@@ -91,6 +102,16 @@ class StorySpec:
     def title(self) -> str:
         """Section title: the theme/subject, falling back to the headline."""
         return (self.subject or self.headline)[:80]
+
+    def hero_image(self) -> str:
+        """Lead image for the story: the first clustered article that carried one.
+        Articles arrive importance-ordered within a story, and several of our
+        feeds (ESPN, CNBC, TechCrunch) carry no images at all — so this scans the
+        whole cluster rather than trusting the top article."""
+        for a in getattr(self, "_articles", None) or []:
+            if getattr(a, "image_url", ""):
+                return a.image_url
+        return ""
 
     @classmethod
     def from_dict(cls, raw: dict) -> "StorySpec | None":
@@ -110,6 +131,7 @@ class StorySpec:
             domain=domain,
             subject=str(raw.get("subject") or "").strip()[:80],
             importance=max(1, min(5, _as_int(raw.get("importance")) or 3)),
+            breaking=bool(raw.get("breaking")),
             summary=str(raw.get("summary") or "").strip(),
             article_urls=[u for u in raw.get("article_urls", []) if isinstance(u, str)],
             panels=panels,

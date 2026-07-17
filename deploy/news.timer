@@ -1,11 +1,26 @@
-# Fires the daily helio-news run. Pair with news.service (same basename).
+# Fires the daily helio-news run and WAKES the machine from suspend to do it.
+# Install to: /etc/systemd/system/news.timer
+#
+#   sudo cp news.service news.timer /etc/systemd/system/
+#   sudo install -Dm644 ollama-10-user-models.conf \
+#        /etc/systemd/system/ollama.service.d/10-user-models.conf
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ollama
+#   sudo systemctl enable --now news.timer
+#   systemctl list-timers news.timer     # confirm next elapse
+#
+# Verify RTC wake works at all:  sudo rtcwake -m mem -s 120
 [Unit]
-Description=Run helio-news once each morning
+Description=Run helio-news each morning (wakes the machine from suspend)
 
 [Timer]
-# 07:00 local, and catch up if the machine was asleep at the scheduled time.
 OnCalendar=*-*-* 07:00:00
+# Program an RTC alarm so a suspended machine wakes up for this.
+WakeSystem=true
+# If 07:00 was missed entirely (machine fully powered off — RTC wake can't help
+# there), run once on next boot instead of skipping the day.
 Persistent=true
+AccuracySec=1min
 
 [Install]
 WantedBy=timers.target

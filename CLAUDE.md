@@ -8,7 +8,7 @@ NEVER update, remove, or move any files or directories in system paths or the ho
 
 ## Environment
 
-Arch Linux with a Hyprland desktop (fish shell, foot terminal). Git credentials are managed via the GitHub CLI (`gh auth`).
+Arch Linux with a Hyprland desktop (fish shell, ghostty terminal). Git credentials are managed via the GitHub CLI (`gh auth`).
 
 ## Projects
 
@@ -18,7 +18,7 @@ Main active project — a dashboard builder with a React/Redux/TypeScript fronte
 
 ### caelestia (`~/caelestia`)
 
-Dotfiles repo for the Hyprland desktop environment. Configs for hypr, fish, foot, btop, fastfetch, spicetify, vscode/vscodium, and zen browser. All configs are symlinked into `~/.config` by the install script — edits in `~/caelestia/*` take effect immediately.
+Dotfiles repo for the Hyprland desktop environment. Configs for hypr, fish, ghostty, foot, btop, fastfetch, spicetify, vscode/vscodium, and zen browser. All configs are symlinked into `~/.config` by the install script — edits in `~/caelestia/*` take effect immediately.
 
 ```bash
 ./install.fish [--noconfirm] [--spotify] [--vscode=codium|code] [--discord] [--zen] [--aur-helper=yay|paru]

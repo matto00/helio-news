@@ -1,18 +1,29 @@
-# helio-news daily run (systemd *user* service).
-# Install (does NOT auto-install — review first):
-#   ln -s ~/Development/helio-news/deploy/news.service ~/.config/systemd/user/
-#   ln -s ~/Development/helio-news/deploy/news.timer   ~/.config/systemd/user/
-#   systemctl --user daemon-reload && systemctl --user enable --now news.timer
+# helio-news daily run — SYSTEM service (not a user unit).
+# Install to: /etc/systemd/system/news.service
+#
+# It must be a system unit because its timer uses WakeSystem=true, and only the
+# system manager may program an RTC wake alarm. It still runs the job as `matt`
+# so it uses the user's venv, .env, and ~/.ollama models.
 [Unit]
 Description=helio-news daily aggregation → helio dashboard
-After=network-online.target
+Documentation=file:///home/matt/Development/helio-news/README.md
+# The gemma passes need ollama on :11434. Requires= so we don't wake up and
+# fail silently if ollama is down.
+Requires=ollama.service
+After=ollama.service network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/Development/helio-news
-# HELIO_PAT + HELIO_API_BASE_URL live here (gitignored), out of code/config.
-EnvironmentFile=%h/Development/helio-news/.env
-ExecStart=%h/Development/helio-news/.venv/bin/python -m news.run
-# Needs the local ollama service reachable at the configured host.
+User=matt
+Group=matt
+WorkingDirectory=/home/matt/Development/helio-news
+# HELIO_PAT + HELIO_API_BASE_URL (gitignored, chmod 600).
+EnvironmentFile=/home/matt/Development/helio-news/.env
+# Belt-and-braces: wait (up to ~60s) for ollama to answer before the run.
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do curl -sf -o /dev/null http://localhost:11434/api/tags && exit 0; sleep 2; done; echo "ollama not responding on :11434"; exit 1'
+ExecStart=/home/matt/Development/helio-news/.venv/bin/python -m news.run
+# `+` = run as root so it can suspend without polkit. Only re-suspends if the
+# machine woke up for this run; no-ops if you're using it.
+ExecStopPost=+/home/matt/Development/helio-news/deploy/suspend-if-woken.sh
 TimeoutStartSec=1800

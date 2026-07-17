@@ -21,6 +21,20 @@ from mcp.client.stdio import stdio_client
 
 _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
+# Mirrors the backend's ChartAppearance.Default. Required in full on every
+# appearance PATCH (see set_chart_type) — the backend has no partial decoder for
+# it, so sending just {"chartType": …} 400s.
+CHART_APPEARANCE = {
+    "seriesColors": ["#5470c6", "#91cc75", "#fac858", "#ee6666",
+                     "#73c0de", "#3ba272", "#fc8452", "#9a60b4"],
+    "legend": {"show": True, "position": "top"},
+    "tooltip": {"enabled": True},
+    # `label` omitted (Option[String]) so charts show their own column names
+    # rather than a hardcoded "X Axis"/"Y Axis".
+    "axisLabels": {"x": {"show": True}, "y": {"show": True}},
+    "chartType": "line",
+}
+
 
 def _load_pat_env() -> dict[str, str]:
     """HELIO_PAT + HELIO_API_BASE_URL from os.environ, falling back to ./.env."""
@@ -115,7 +129,22 @@ class HelioClient:
             "panelId": panel_id, "dataTypeId": output_type_id,
             "fieldMapping": sd.mapping, "panelType": sd.panel_type,
         })
+        if sd.panel_type == "chart" and sd.chart_type:
+            await self.set_chart_type(panel_id, sd.chart_type)
         return panel_id
+
+    async def set_chart_type(self, panel_id: str, chart_type: str) -> None:
+        """Switch a chart panel to line/bar/pie/scatter.
+
+        The backend decodes `appearance.chart` as a COMPLETE ChartAppearance
+        (jsonFormat5), so a partial {"chartType": …} patch is rejected with a 400
+        — verified against the live API. We therefore resend the full default
+        appearance with only chartType varied.
+        """
+        await self.call("update_panel_appearance", {
+            "panelId": panel_id,
+            "appearance": {"chart": {**CHART_APPEARANCE, "chartType": chart_type}},
+        })
 
     async def add_text_panel(self, dashboard_id: str, title: str, content: str,
                              markdown: bool = True) -> str:
@@ -124,6 +153,19 @@ class HelioClient:
             "type": "markdown" if markdown else "text",
             "title": title,
             "config": {"content": content},
+        })
+        return panel["id"]
+
+    async def add_image_panel(self, dashboard_id: str, title: str, image_url: str,
+                              fit: str = "cover") -> str:
+        """An image panel is unbound content — no source/pipeline needed, the
+        browser fetches the URL straight from the outlet's CDN. `fit` ∈
+        contain|cover|fill; `cover` fills the panel without letterboxing."""
+        panel = await self.call("create_panel", {
+            "dashboardId": dashboard_id,
+            "type": "image",
+            "title": title,
+            "config": {"imageUrl": image_url, "imageFit": fit},
         })
         return panel["id"]
 

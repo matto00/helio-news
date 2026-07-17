@@ -33,6 +33,10 @@ class SourceData:
     rows: list[list]                            # row-major values
     mapping: dict[str, str]                     # bind_panel fieldMapping
     panel_type: str                             # metric | chart | table
+    # line | bar | pie | scatter. The enricher picks the shape that suits its
+    # own data (a % -change comparison is a bar, a price history is a line);
+    # the planner may override it. Ignored for non-chart panels.
+    chart_type: str | None = None
 
     def column_names(self) -> list[str]:
         return [c["name"] for c in self.columns]
@@ -40,24 +44,30 @@ class SourceData:
 
 def resolve(panel: PanelSpec, story) -> SourceData | None:
     """Dispatch a data panel to its enricher. `story` is a StorySpec (carries the
-    clustered `_articles` for the headlines enricher)."""
+    clustered `_articles`). Returns None — dropping the panel — rather than
+    raising, so one bad symbol or empty feed never takes down a run."""
     enr = panel.enricher()
     arg = panel.data.split(":", 1)[1] if panel.data and ":" in panel.data else ""
     fn = REGISTRY.get(enr or "")
     if not fn:
         return None
     try:
-        return fn(arg, panel, story)
+        sd = fn(arg, panel, story)
     except Exception:
         return None
+    if sd and panel.chart_type and sd.panel_type == "chart":
+        sd.chart_type = panel.chart_type      # planner's choice wins
+    return sd
 
 
 # Imported after SourceData is defined to avoid circular import surprises.
+from . import coverage as _coverage     # noqa: E402
 from . import stocks as _stocks         # noqa: E402
 
 # Prefix → builder. Add a new capability here (e.g. "sports": _sports.build).
 # Headlines/summaries are not enrichers — run.py renders them into each story's
-# markdown panel directly.
+# markdown panel directly. Neither are images: they're unbound content panels.
 REGISTRY = {
     "stock": _stocks.build,
+    "coverage": _coverage.build,
 }

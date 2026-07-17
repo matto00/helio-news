@@ -7,36 +7,69 @@ sequence of local **gemma** passes (via ollama) clusters and interprets them and
 entirely through the **helio MCP server** (Python is the MCP client — auth stays
 in the server, no REST calls here).
 
-> An IPO story gets a stock chart + KPI + headlines. A Padres playoff story gets
-> headlines (+ rosters/stats once a sports enricher is added). A pure political
-> story just gets headlines + a summary. The planner pass chooses per story.
+> A breaking Nvidia story gets a price chart + a day/week/month trend bar. A
+> Padres playoff story gets a photo and its headlines. A pure political story
+> gets a photo, a summary, and who's covering it. The planner chooses per story.
 
 ## Pipeline
 
 ```
 RSS (feedparser) ─► gemma sequence (ollama, sequential) ─► enrichers ─► helio (MCP client)
-  config/outlets    1 triage    cluster + domain + rank      stock:  yfinance    create dated
-                    2 planner   choose panels + data keys     headlines: articles  sources+pipelines,
-                    3 summarize  headline + summary                                build/refresh dashboard,
-                                                                                   delete prior run
+  config/outlets    1 triage    cluster + domain + importance + breaking
+                    2 planner   pick panels from an offered MENU
+                    3 summarize subject + headline + summary
+                    4 layout    size every panel on the 12-col grid
 ```
 
 Each gemma pass is a separate ollama call with its own system prompt and narrow
 input — far more reliable on a 4B model than one mega-prompt, and they run
 **strictly sequentially** so only one model is resident at a time (16 GB GPU).
 
+### Two ideas do most of the work
+
+**The planner is offered a menu, not a vocabulary.** `agents.story_offers()`
+computes in code what data actually exists for a story — is there a photo? enough
+outlets to chart? a ticker the news is moving? — and the prompt lists only those,
+verbatim. A 4B model asked to invent panel keys hallucinates; the same model
+picking from six real lines does well. Anything it emits anyway is dropped in
+validation, so a bad plan degrades to summary-only rather than breaking the run.
+
+**The model sizes, the code packs.** The `layout` pass returns a `w × h` per
+panel; `run._pack` flows those into non-overlapping grid positions. Asking a 4B
+model for 30 non-overlapping rectangles produces overlaps; asking it "how big
+should this lead story be?" works. Judgement to the model, geometry to the code.
+
 ## Layout
 
 | Path | Role |
 |------|------|
-| `config/outlets.yaml` | feeds, watchlist/tickers, model-per-pass, helio settings |
-| `news/fetch.py` | RSS ingestion + `--check` feed validator |
-| `news/agents.py` | the gemma sequence (triage → planner → summarizer) |
+| `config/outlets.yaml` | feeds, watchlist/tickers, model-per-pass, stock gating, helio settings |
+| `news/fetch.py` | RSS ingestion, lead-image extraction, `--check` feed validator |
+| `news/agents.py` | the gemma sequence (triage → planner → summarizer → layout) |
 | `news/plan_schema.py` | the planner contract; validates/repairs gemma output |
-| `news/enrichers/` | pluggable aux-data: `stocks.py` (yfinance), `headlines.py`; add `sports.py` etc. |
+| `news/enrichers/` | pluggable aux-data: `stocks.py` (yfinance), `coverage.py`, `briefing.py` |
 | `news/helio_client.py` | MCP client wrapper (spawns the helio MCP server over stdio) |
-| `news/run.py` | daily driver (`--plan-only`, `--keep`) |
-| `deploy/` | systemd user service + timer |
+| `news/run.py` | daily driver (`--plan-only`, `--keep`) + the grid packer |
+| `deploy/` | systemd system service + wake-from-suspend timer |
+
+## Panel vocabulary
+
+Everything below is measured from real data — nothing on the dashboard is
+invented by a model.
+
+| Panel | Source | When |
+|-------|--------|------|
+| markdown (summary + headlines) | the clustered articles | every story |
+| image | the widest photo any clustered article carries | planner's call; needs a feed that ships images |
+| `stock:TICKER:1d\|1w\|1mo` | yfinance | **breaking** tech/markets stories only |
+| `stock:TICKER:trend` | yfinance | day/week/month % change, as a bar |
+| `stock:TICKER` (metric) | yfinance | latest price + day change |
+| `coverage:sources` | the story's own articles | ≥3 outlets covering it |
+| `coverage:timeline` | article timestamps | ≥3 distinct hours — shows a story breaking |
+| briefing pie/bar/metrics | the day's fetch stats | always (the "at a glance" strip) |
+
+Stocks are gated to breaking news (`stocks.breaking_only` in the config) — a
+ticker earns a chart when the news is *moving* it, not every day.
 
 ## Setup
 
@@ -71,9 +104,31 @@ Schedule it: see `deploy/news.service` (installs as a systemd *user* timer).
 ## Extending
 
 - **New feeds / interests:** edit `config/outlets.yaml` (`feeds`, `watchlist`).
+  Note that a feed carrying **no images** (ESPN, CNBC, TechCrunch, Al Jazeera)
+  can still contribute to an illustrated story — the photo is taken from whichever
+  clustered article has the widest one. `--check` reports per-feed image coverage.
 - **New panel kind** (e.g. sports rosters): add `news/enrichers/sports.py`
   exposing `build(arg, panel, story) -> SourceData`, register its prefix in
-  `enrichers/REGISTRY`, and add the `data` key to the planner prompt in
-  `agents.py`. Nothing else changes — an unknown/failed enricher just drops that
-  panel, leaving the story's headlines fallback.
-- **Route a pass to a bigger model:** change one line under `models:` in the config.
+  `enrichers/REGISTRY` **and in `plan_schema.KNOWN_ENRICHERS`**, then offer its
+  key from `agents.story_offers()` — only offer it when the data really exists
+  for that story, since the planner can only pick from what it's shown. Nothing
+  else changes: an unknown or failed enricher drops that one panel and the story
+  keeps its summary.
+- **Route a pass to a bigger model:** change one line under `models:` in the
+  config. The `layout` pass is the cheapest one to upgrade — it runs once per
+  run, not once per story.
+- **Want stocks back every day:** set `stocks.breaking_only: false`.
+
+### Gotchas worth knowing
+
+- **Chart types need a full appearance object.** Setting `chartType` via
+  `update_panel_appearance` requires resending a *complete* `ChartAppearance`;
+  a partial `{"chartType": "bar"}` is rejected with a 400. See
+  `helio_client.CHART_APPEARANCE`.
+- **Image panels are unbound** — `config: {imageUrl, imageFit}`, no source or
+  pipeline. `imageFit` ∈ `contain|cover|fill`.
+- **Feeds advertise the smallest image first.** The Guardian lists 140/460/700px
+  in that order, and its URLs are signature-signed so the width *cannot* be
+  rewritten — the widest variant must be selected. The BBC ships only 240px
+  thumbnails but its CDN serves `/800/` at the same path (unsigned), so those are
+  upgraded instead. See `fetch._entry_image`.
