@@ -1,0 +1,178 @@
+# helio-news feed + interest configuration.
+#
+# Two parts:
+#   feeds      — RSS/Atom sources grouped by topic. `weight` biases the triage
+#                pass toward topics you care about; `grounding: true` marks the
+#                broad wire services used to balance the personal-bias feeds.
+#   watchlist  — entities the triage/planner boost wherever they appear across
+#                ALL feeds, plus the ticker map that drives the stock enricher.
+#                `ticker: private` = tracked, but headlines-only (no chart).
+#
+# NOTE: feed URLs drift; `python -m news.fetch --check` validates them and
+# reports any that 404 or return no entries. Fix those before the first real run.
+
+defaults:
+  # How far back a run considers an article "new" (hours).
+  lookback_hours: 30
+  # Max stories the day's dashboard is built around.
+  top_stories: 8
+  # Articles handed to the (small) triage model after heuristic pre-ranking.
+  triage_candidates: 80
+  # Per story, how many of its lead articles get their full body fetched
+  # (trafilatura) for the summarizer/extractor. More = deeper input, more HTTP.
+  body_articles: 3
+
+# Local inference. Every pass runs on ONE model (gpt-oss:latest — 21B MoE, ~3.6B
+# active) so nothing is ever evicted/reloaded mid-run: the passes interleave per
+# story, and mixing models there would thrash the GPU. Quality is tuned per pass
+# via `reasoning:` effort, not by swapping models. `qwen3.5:27b` is the installed
+# challenger worth A/B-ing on the editorial/extraction passes.
+ollama:
+  host: "http://localhost:11434"
+  timeout_seconds: 600      # high-effort reasoning + a big context is slower per call
+  # Context window. gpt-oss is MoE and handles long context well; 64k comfortably
+  # fits a 16 GB GPU alongside the 13 GB model. Push toward 131072 only if VRAM
+  # headroom allows — the KV cache grows with this.
+  num_ctx: 65536
+models:
+  triage: "gpt-oss:latest"
+  planner: "gpt-oss:latest"
+  summarizer: "gpt-oss:latest"
+  layout: "gpt-oss:latest"      # sizes every panel on the grid (one call per board)
+  sentiment: "gpt-oss:latest"   # tags each story good/bad/neutral → panel tinting
+  curator: "gpt-oss:latest"     # picks the front page + writes each board's brief
+  extractor: "gpt-oss:latest"   # pulls the story's key figures from article bodies
+  critic: "gpt-oss:latest"      # audits each extracted figure against the source text
+
+# gpt-oss reasoning effort per pass (low | medium | high). Judgement-heavy passes
+# get high; mechanical/structured ones stay low so the model doesn't overthink a
+# JSON shape. The thinking channel is discarded — only the final JSON is used.
+reasoning:
+  triage: high              # clustering same-event articles is the hardest call
+  planner: medium
+  summarizer: medium
+  layout: low               # just w×h integers
+  sentiment: low            # a 3-way tag
+  curator: high             # editorial "what's the day's lead"
+  extractor: high           # finding the right figures is the generative call
+  critic: high              # also the relevance judge (reject off-topic figures a
+                            # same-vocabulary article leaked in) — wants real reasoning
+
+# Story sentiment → panel background tint (metrics/charts only; summaries/photos
+# stay neutral). A stock panel overrides this with its own price-movement sign.
+# Tuned for a light theme — adjust the hex to taste; "" means no tint.
+sentiment:
+  colors:
+    good: "#dcefe1"         # soft green — good news
+    bad: "#f8dcd8"          # soft red — bad news
+    neutral: ""             # default surface
+
+# The day is split across an overview board plus these section boards. `sections`
+# maps a board name → the story domains it collects (triage domains: politics,
+# world, sports, tech, ai, markets, business, general). Domains not listed here
+# appear only in the overview digest. The curator picks which stories lead the
+# overview and writes every board's one-line editor's brief.
+dashboards:
+  overview: "News Overview"     # the aggregate board — biggest stories of the day
+  overview_size: 5              # how many headliner stories it digests
+  sections:
+    "Politics & World": ["politics", "world"]
+    "Tech & AI": ["tech", "ai"]
+    "Sports": ["sports"]
+    "Markets & Business": ["markets", "business"]
+
+# Stocks are for news that MOVES a stock — not a daily price readout. A ticker
+# only earns a chart when its story broke today; set breaking_only: false to go
+# back to charting any tech/markets story that names a watchlist company.
+stocks:
+  breaking_only: true
+  # …unless a non-breaking story is this important anyway (5 = lead story only).
+  min_importance: 5
+
+# The helio MCP server this project drives (Python spawns it over stdio; the PAT
+# lives in the server's own env, never here). Override via env HELIO_MCP_CMD /
+# HELIO_PAT / HELIO_API_BASE_URL if your paths differ.
+helio:
+  mcp_command: "node"
+  mcp_args: ["/home/matt/Development/helio/helio-mcp/dist/index.js"]
+  # Dashboard names now live under `dashboards:` (overview + sections).
+
+feeds:
+  grounding:            # broad, low-bias wire services
+    weight: 1.0
+    grounding: true
+    sources:
+      # AP and Reuters dropped their public RSS; Guardian/NPR/Al Jazeera/BBC
+      # give equivalent broad-wire grounding.
+      - { name: "NPR News",       url: "https://feeds.npr.org/1001/rss.xml" }
+      - { name: "Guardian World", url: "https://www.theguardian.com/world/rss" }
+      - { name: "Al Jazeera",     url: "https://www.aljazeera.com/xml/rss/all.xml" }
+      - { name: "BBC World",      url: "https://feeds.bbci.co.uk/news/world/rss.xml" }
+
+  politics:             # U.S. politics
+    weight: 1.4
+    sources:
+      - { name: "Guardian US Politics", url: "https://www.theguardian.com/us-news/us-politics/rss" }
+      - { name: "Politico",      url: "https://rss.politico.com/politics-news.xml" }
+      - { name: "The Hill",      url: "https://thehill.com/homenews/feed/" }
+      - { name: "NPR Politics",  url: "https://feeds.npr.org/1014/rss.xml" }
+
+  sports:               # basketball / soccer / football / baseball
+    weight: 1.3
+    sources:
+      # ESPN gives the best breadth but its feeds carry NO images at all. CBS +
+      # Guardian are here so sports stories can still earn a hero image — a
+      # story is illustrated if ANY of its clustered articles has one.
+      - { name: "ESPN Top",   url: "https://www.espn.com/espn/rss/news" }
+      - { name: "ESPN NBA",   url: "https://www.espn.com/espn/rss/nba/news" }
+      - { name: "ESPN NFL",   url: "https://www.espn.com/espn/rss/nfl/news" }
+      - { name: "ESPN MLB",   url: "https://www.espn.com/espn/rss/mlb/news" }
+      - { name: "ESPN Soccer", url: "https://www.espn.com/espn/rss/soccer/news" }
+      - { name: "CBS Sports", url: "https://www.cbssports.com/rss/headlines/" }
+      - { name: "Guardian Football", url: "https://www.theguardian.com/football/rss" }
+
+  tech:                 # FAANG + general tech
+    weight: 1.3
+    sources:
+      - { name: "Ars Technica", url: "https://feeds.arstechnica.com/arstechnica/index" }
+      - { name: "The Verge",    url: "https://www.theverge.com/rss/index.xml" }
+      - { name: "TechCrunch",   url: "https://techcrunch.com/feed/" }
+
+  ai:                   # AI-specific (Anthropic / OpenAI et al.)
+    weight: 1.5
+    sources:
+      # Anthropic publishes no RSS; its news surfaces via watchlist keyword
+      # matching across these AI/tech feeds instead.
+      - { name: "OpenAI News",     url: "https://openai.com/news/rss.xml" }
+      - { name: "Simon Willison",  url: "https://simonwillison.net/atom/everything/" }
+      - { name: "Import AI",       url: "https://importai.substack.com/feed" }
+
+  markets:              # markets / business (pulled in "as needed")
+    weight: 1.1
+    sources:
+      - { name: "CNBC Top",     url: "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114" }
+      - { name: "MarketWatch",  url: "http://feeds.marketwatch.com/marketwatch/topstories/" }
+
+# Entities boosted wherever they appear, regardless of which feed they came from.
+# `tickers` drives the stock enricher; teams drive the (future) sports enricher.
+watchlist:
+  companies:
+    - { name: "Apple",     keywords: ["apple", "aapl"],            ticker: "AAPL" }
+    - { name: "Amazon",    keywords: ["amazon", "amzn", "aws"],    ticker: "AMZN" }
+    - { name: "Meta",      keywords: ["meta", "facebook", "instagram"], ticker: "META" }
+    - { name: "Alphabet",  keywords: ["google", "alphabet", "deepmind"], ticker: "GOOGL" }
+    - { name: "Netflix",   keywords: ["netflix", "nflx"],          ticker: "NFLX" }
+    - { name: "Nvidia",    keywords: ["nvidia", "nvda"],           ticker: "NVDA" }
+    - { name: "C3.ai",     keywords: ["c3.ai", "c3 ai"],           ticker: "AI" }
+    - { name: "Anthropic", keywords: ["anthropic", "claude"],      ticker: "private" }
+    - { name: "OpenAI",    keywords: ["openai", "chatgpt", "gpt-"], ticker: "private" }
+
+  people:
+    - { name: "Boris Cherny",    keywords: ["boris cherny", "claude code"] }
+    - { name: "Andrej Karpathy", keywords: ["karpathy"] }
+
+  teams:                # San Francisco + San Diego lean
+    - { name: "SF Giants",     league: "MLB", keywords: ["giants", "sf giants"] }
+    - { name: "SD Padres",     league: "MLB", keywords: ["padres"] }
+    - { name: "SF 49ers",      league: "NFL", keywords: ["49ers", "niners"] }
+    - { name: "Golden State Warriors", league: "NBA", keywords: ["warriors", "dubs"] }
