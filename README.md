@@ -2,10 +2,11 @@
 
 A local, personal news aggregator that builds **content-shaped ("alive")**
 dashboards in [helio](../helio) every morning. Feeds are pulled as RSS, a
-sequence of local **gemma** passes (via ollama) clusters and interprets them and
-*decides which panels each story needs*, and the result is written to helio
-entirely through the **helio MCP server** (Python is the MCP client — auth stays
-in the server, no REST calls here).
+sequence of local **model** passes (via ollama, all on `gpt-oss`) clusters and
+interprets them, *extracts and fact-checks the story's key figures*, and *decides
+which panels each story needs* — the result written to helio entirely through the
+**helio MCP server** (Python is the MCP client — auth stays in the server, no REST
+calls here).
 
 > A breaking Nvidia story gets a price chart + a day/week/month trend bar. A
 > Padres playoff story gets a photo and its headlines. A pure political story
@@ -14,38 +15,59 @@ in the server, no REST calls here).
 ## Pipeline
 
 ```
-RSS (feedparser) ─► gemma sequence (ollama, sequential) ─► enrichers ─► helio (MCP client)
-  config/outlets    1 triage    cluster + domain + importance + breaking
-                    2 planner   pick panels from an offered MENU
-                    3 summarize subject + headline + summary
-                    4 layout    size every panel on the 12-col grid
+RSS (feedparser) ─► full text ─► model sequence (ollama, sequential) ─► enrichers ─► helio (MCP client)
+  config/outlets    trafilatura  1 triage    cluster + domain + importance + breaking
+                    (top 3/story) 2 extract   pull the story's key figures from the bodies
+                    cached        3 critic    audit each figure against the source text
+                                  4 planner   pick panels from an offered MENU
+                                  5 summarize subject + headline + summary
+                                  6 layout    size every panel on the 12-col grid
 ```
 
-Each gemma pass is a separate ollama call with its own system prompt and narrow
-input — far more reliable on a 4B model than one mega-prompt, and they run
-**strictly sequentially** so only one model is resident at a time (16 GB GPU).
+Each built story's lead articles are hydrated to **full body text** (trafilatura,
+cached in `state/bodies/`) before the model passes run — so summaries and the
+figure extractor reason off substance, not RSS teasers. Any fetch that fails or
+comes back thin degrades to the RSS summary; nothing depends on a scrape
+succeeding.
 
-### Two ideas do most of the work
+Every pass runs on **one model** (`gpt-oss`, a 21B MoE) so nothing is evicted
+mid-run — the passes interleave per story, and mixing models there would thrash
+the 16 GB GPU. Each pass is still a separate ollama call with its own system
+prompt and narrow input (far more reliable than one mega-prompt), and quality is
+tuned per pass by **reasoning effort** (`reasoning:` in the config — `high` for
+the judgement-heavy triage/extract/critic/curator, `low` for mechanical
+sizing/tagging), not by swapping models.
+
+### Three ideas do most of the work
 
 **The planner is offered a menu, not a vocabulary.** `agents.story_offers()`
 computes in code what data actually exists for a story — is there a photo? enough
-outlets to chart? a ticker the news is moving? — and the prompt lists only those,
-verbatim. A 4B model asked to invent panel keys hallucinates; the same model
-picking from six real lines does well. Anything it emits anyway is dropped in
-validation, so a bad plan degrades to summary-only rather than breaking the run.
+outlets to chart? a ticker the news is moving? verified figures to tabulate? — and
+the prompt lists only those, verbatim. A model asked to invent panel keys
+hallucinates; the same model picking from real lines does well. Anything it emits
+anyway is dropped in validation, so a bad plan degrades to summary-only rather
+than breaking the run.
 
 **The model sizes, the code packs.** The `layout` pass returns a `w × h` per
-panel; `run._pack` flows those into non-overlapping grid positions. Asking a 4B
-model for 30 non-overlapping rectangles produces overlaps; asking it "how big
-should this lead story be?" works. Judgement to the model, geometry to the code.
+panel; `run._pack` flows those into non-overlapping grid positions. Asking a model
+for 30 non-overlapping rectangles produces overlaps; asking it "how big should
+this lead story be?" works. Judgement to the model, geometry to the code.
+
+**Numbers are extracted, then adversarially fact-checked.** The `extract` pass
+pulls the story's key figures out of the article bodies, each carried with the
+verbatim sentence it came from; code then checks that quote is really in the text
+(killing hallucinations deterministically), and a `critic` pass audits the
+survivors — a figure reaches the "By the numbers" table only if its quote is found
+*and* the critic agrees it states that value. Nothing invented, nothing rounded,
+everything traceable to a source sentence.
 
 ## Layout
 
 | Path | Role |
 |------|------|
 | `config/outlets.yaml` | feeds, watchlist/tickers, model-per-pass, stock gating, helio settings |
-| `news/fetch.py` | RSS ingestion, lead-image extraction, `--check` feed validator |
-| `news/agents.py` | the gemma sequence (triage → planner → summarizer → layout) |
+| `news/fetch.py` | RSS ingestion, lead-image extraction, full-text hydration (trafilatura, cached in `state/bodies/`), `--check` feed validator |
+| `news/agents.py` | the model sequence (triage → extract → critic → planner → summarizer → layout) + sentiment/curator editorial passes |
 | `news/plan_schema.py` | the planner contract; validates/repairs gemma output |
 | `news/enrichers/` | pluggable aux-data: `stocks.py` (yfinance), `coverage.py`, `briefing.py` |
 | `news/helio_client.py` | MCP client wrapper (spawns the helio MCP server over stdio) |
@@ -61,6 +83,7 @@ invented by a model.
 |-------|--------|------|
 | markdown (summary + headlines) | the clustered articles | every story |
 | image | the widest photo any clustered article carries | planner's call; needs a feed that ships images |
+| `facts:numbers` ("By the numbers") | figures extracted from the article bodies, each quote-grounded + critic-audited | ≥2 verified figures survive extraction |
 | `stock:TICKER:1d\|1w\|1mo` | yfinance | **breaking** tech/markets stories only |
 | `stock:TICKER:trend` | yfinance | day/week/month % change, as a bar |
 | `stock:TICKER` (metric) | yfinance | latest price + day change |

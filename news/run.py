@@ -24,7 +24,7 @@ from dataclasses import asdict
 from datetime import date
 
 from . import enrichers
-from .agents import Ollama, curate, enrich, layout, sentiment_pass
+from .agents import Ollama, curate, enrich, layout, sentiment_pass, timed, timings_report
 from .enrichers import briefing
 from .fetch import fetch_all, load_config
 from .helio_client import HelioClient
@@ -90,7 +90,8 @@ def _board_slug(name: str) -> str:
 def build_plan(config: dict):
     """Fetch → gemma passes (triage/planner/summarizer) → the two qwen editorial
     passes (sentiment, curator). Returns (plan, articles, curation)."""
-    articles = fetch_all(config)
+    with timed("fetch"):
+        articles = fetch_all(config)
     print(f"· fetched {len(articles)} fresh articles", file=sys.stderr)
     plan = enrich(articles, config, run_day=date.today())
     print(f"· gemma produced {len(plan.stories)} stories", file=sys.stderr)
@@ -99,9 +100,13 @@ def build_plan(config: dict):
     # bigger model is resident only once (the gemma passes above already ran).
     oc = config.get("ollama", {})
     models = config.get("models", {})
-    ol = Ollama(oc.get("host", "http://localhost:11434"), oc.get("timeout_seconds", 180))
+    effort = config.get("reasoning", {})
+    ol = Ollama(oc.get("host", "http://localhost:11434"),
+                oc.get("timeout_seconds", 180), oc.get("num_ctx"))
 
-    tags = sentiment_pass(ol, models.get("sentiment", "qwen3:8b"), plan.stories)
+    with timed("sentiment"):
+        tags = sentiment_pass(ol, models.get("sentiment", "gpt-oss:latest"),
+                              plan.stories, effort.get("sentiment"))
     for s in plan.stories:
         s.sentiment = tags.get(s.slug, s.sentiment)
     pos = sum(1 for s in plan.stories if s.sentiment == "good")
@@ -117,9 +122,10 @@ def build_plan(config: dict):
         "headline": s.headline, "subject": s.subject, "importance": s.importance,
         "breaking": s.breaking, "summary": s.summary,
     } for s in plan.stories]
-    curation = curate(ol, models.get("curator", "qwen3:8b"), stories_brief,
-                      [dcfg.get("overview", "News Overview")] + boards,
-                      int(dcfg.get("overview_size", 5)))
+    with timed("curator"):
+        curation = curate(ol, models.get("curator", "gpt-oss:latest"), stories_brief,
+                          [dcfg.get("overview", "News Overview")] + boards,
+                          int(dcfg.get("overview_size", 5)), effort.get("curator"))
     print(f"· curator: {len(curation.get('overview', []))} front-page picks, "
           f"{len(curation.get('briefs', {}))} briefs", file=sys.stderr)
     return plan, articles, curation
@@ -131,6 +137,7 @@ def plan_to_dict(plan: DayPlan) -> dict:
         "stories": [
             {**{k: v for k, v in asdict(s).items() if k != "panels"},
              "image": s.hero_image(),
+             "facts": getattr(s, "_facts", []),
              "panels": [asdict(p) for p in s.panels]}
             for s in plan.stories
         ],
@@ -231,29 +238,16 @@ def _pack(built: list[dict], sizes: dict[int, tuple[int, int]]) -> list[dict]:
     return items
 
 
-async def _add_brief(helio, dashboard_id: str, board_name: str, brief: str,
-                     built: list[dict]) -> None:
-    """Prepend a board's editor's brief — the AI-written one-liner that frames the
-    day for this section. A slim full-width banner (sized in _finish_board)."""
-    if not brief:
-        return
-    pid = await helio.add_text_panel(dashboard_id, board_name, f"_{brief.strip()}_")
-    built.append({"id": pid, "kind": "markdown", "title": board_name,
-                  "importance": 5, "chart_type": None, "note": "editor's brief",
-                  "role": "brief"})
-
-
 async def _build_story(helio, dashboard_id: str, prefix: str, story, colors: dict,
                        seen: set[str], built: list[dict], *, digest: bool = False) -> None:
     """Render one story onto a board. A section board gets the full treatment
     (summary + photo + the planner's data panels, tinted by sentiment/movement);
     the overview gets a `digest` — summary + photo only, so headliner data panels
-    aren't rebuilt off their section board."""
+    aren't rebuilt off their section board.
+
+    The hero image is emitted BEFORE the summary so it packs to the left of the
+    summary on desktop and, when the grid linearises on mobile, sits ABOVE it."""
     arts = getattr(story, "_articles", None) or []
-    md_id = await helio.add_text_panel(dashboard_id, story.title(), story_markdown(story))
-    built.append({"id": md_id, "kind": "markdown", "title": story.title(),
-                  "importance": story.importance, "chart_type": None,
-                  "note": f"summary + {min(len(arts), 6)} headlines"})
 
     if digest or any(p.type == "image" for p in story.panels):
         url = story.hero_image()
@@ -262,6 +256,11 @@ async def _build_story(helio, dashboard_id: str, prefix: str, story, colors: dic
             built.append({"id": pid, "kind": "image", "title": story.title(),
                           "importance": story.importance, "chart_type": None,
                           "note": "a photo"})
+
+    md_id = await helio.add_text_panel(dashboard_id, story.title(), story_markdown(story))
+    built.append({"id": md_id, "kind": "markdown", "title": story.title(),
+                  "importance": story.importance, "chart_type": None,
+                  "note": f"summary + {min(len(arts), 6)} headlines"})
 
     if digest:
         return
@@ -287,15 +286,15 @@ async def _finish_board(helio, dashboard_id: str, built: list[dict], config: dic
     if not built:
         return
     oc = config.get("ollama", {})
-    ol = Ollama(oc.get("host", "http://localhost:11434"), oc.get("timeout_seconds", 180))
+    ol = Ollama(oc.get("host", "http://localhost:11434"),
+                oc.get("timeout_seconds", 180), oc.get("num_ctx"))
     manifest = [{"id": i, "kind": p["kind"], "title": p["title"],
                  "importance": p["importance"], "chart_type": p["chart_type"],
                  "note": p["note"]}
                 for i, p in enumerate(built)]
-    sizes = layout(ol, config.get("models", {}).get("layout", "gemma4:e4b"), manifest)
-    for i, p in enumerate(built):
-        if p.get("role") == "brief":
-            sizes[i] = (GRID_COLS, 3)
+    with timed("layout"):
+        sizes = layout(ol, config.get("models", {}).get("layout", "gpt-oss:latest"), manifest,
+                       config.get("reasoning", {}).get("layout"))
     await helio.set_layout(dashboard_id, _pack(built, sizes))
 
 
@@ -309,7 +308,6 @@ async def apply_plan(plan: DayPlan, articles: list, config: dict, curation: dict
     all_boards = [overview_name] + section_names
     routing = _domain_to_board(config)
     colors = config.get("sentiment", {}).get("colors", {})
-    briefs = curation.get("briefs", {})
 
     async with HelioClient.session(config) as helio:
         missing = REQUIRED_DELETE_TOOLS - await helio.tool_names()
@@ -347,7 +345,6 @@ async def apply_plan(plan: DayPlan, articles: list, config: dict, curation: dict
             did = board_ids[name]
             built: list[dict] = []
             seen: set[str] = set()
-            await _add_brief(helio, did, name, briefs.get(name), built)
             for story in sorted(by_board[name], key=lambda s: s.importance, reverse=True):
                 await _build_story(helio, did, f"{prefix}-{_board_slug(name)}",
                                    story, colors, seen, built)
@@ -366,7 +363,6 @@ async def apply_plan(plan: DayPlan, articles: list, config: dict, curation: dict
         did = board_ids[overview_name]
         built = []
         seen = set()
-        await _add_brief(helio, did, overview_name, briefs.get(overview_name), built)
         for story in picks:
             await _build_story(helio, did, f"{prefix}-overview", story, colors,
                                seen, built, digest=True)
@@ -399,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.plan_only:
         print(json.dumps({**plan_to_dict(plan), "curation": curation}, indent=2))
+        print(timings_report(), file=sys.stderr)
         return 0
 
     if not plan.stories:
@@ -406,6 +403,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     asyncio.run(apply_plan(plan, articles, config, curation, cleanup=not args.keep))
+    print(timings_report(), file=sys.stderr)
     print("✅ dashboards refreshed.", file=sys.stderr)
     return 0
 

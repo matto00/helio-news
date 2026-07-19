@@ -18,23 +18,45 @@ defaults:
   top_stories: 8
   # Articles handed to the (small) triage model after heuristic pre-ranking.
   triage_candidates: 80
+  # Per story, how many of its lead articles get their full body fetched
+  # (trafilatura) for the summarizer/extractor. More = deeper input, more HTTP.
+  body_articles: 3
 
-# Local inference. Passes run SEQUENTIALLY (one 9.6 GB model resident at a time
-# is all a 16 GB GPU wants) — change any single line to route a pass to a
-# beefier local model (e.g. planner: "qwen3.5:27b") without touching code.
+# Local inference. Every pass runs on ONE model (gpt-oss:latest — 21B MoE, ~3.6B
+# active) so nothing is ever evicted/reloaded mid-run: the passes interleave per
+# story, and mixing models there would thrash the GPU. Quality is tuned per pass
+# via `reasoning:` effort, not by swapping models. `qwen3.5:27b` is the installed
+# challenger worth A/B-ing on the editorial/extraction passes.
 ollama:
   host: "http://localhost:11434"
-  timeout_seconds: 180
+  timeout_seconds: 600      # high-effort reasoning + a big context is slower per call
+  # Context window. gpt-oss is MoE and handles long context well; 64k comfortably
+  # fits a 16 GB GPU alongside the 13 GB model. Push toward 131072 only if VRAM
+  # headroom allows — the KV cache grows with this.
+  num_ctx: 65536
 models:
-  # Mechanical passes stay on the small fast model.
-  triage: "gemma4:e4b"
-  planner: "gemma4:e4b"
-  summarizer: "gemma4:e4b"
-  layout: "gemma4:e4b"      # sizes every panel on the grid (one call per run)
-  # Editorial passes use a sharper model — they make the day feel edited, not
-  # dumped. qwen3:8b (5.2 GB) fits the GPU cleanly alongside the sequential flow.
-  sentiment: "qwen3:8b"     # tags each story good/bad/neutral → panel tinting
-  curator: "qwen3:8b"       # picks the front page + writes each board's brief
+  triage: "gpt-oss:latest"
+  planner: "gpt-oss:latest"
+  summarizer: "gpt-oss:latest"
+  layout: "gpt-oss:latest"      # sizes every panel on the grid (one call per board)
+  sentiment: "gpt-oss:latest"   # tags each story good/bad/neutral → panel tinting
+  curator: "gpt-oss:latest"     # picks the front page + writes each board's brief
+  extractor: "gpt-oss:latest"   # pulls the story's key figures from article bodies
+  critic: "gpt-oss:latest"      # audits each extracted figure against the source text
+
+# gpt-oss reasoning effort per pass (low | medium | high). Judgement-heavy passes
+# get high; mechanical/structured ones stay low so the model doesn't overthink a
+# JSON shape. The thinking channel is discarded — only the final JSON is used.
+reasoning:
+  triage: high              # clustering same-event articles is the hardest call
+  planner: medium
+  summarizer: medium
+  layout: low               # just w×h integers
+  sentiment: low            # a 3-way tag
+  curator: high             # editorial "what's the day's lead"
+  extractor: high           # finding the right figures is the generative call
+  critic: high              # also the relevance judge (reject off-topic figures a
+                            # same-vocabulary article leaked in) — wants real reasoning
 
 # Story sentiment → panel background tint (metrics/charts only; summaries/photos
 # stay neutral). A stock panel overrides this with its own price-movement sign.

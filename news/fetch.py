@@ -9,6 +9,7 @@ gemma passes. `python -m news.fetch --check` validates feed URLs.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import sys
 import time
@@ -20,6 +21,10 @@ import feedparser
 import yaml
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "outlets.yaml"
+
+# Full article bodies are cached here so a dev `--plan-only` loop (and any re-run)
+# doesn't re-scrape the same URLs. `state/` is already gitignored.
+BODY_CACHE = Path(__file__).resolve().parent.parent / "state" / "bodies"
 
 
 @dataclass
@@ -33,6 +38,7 @@ class Article:
     summary: str = ""                # raw RSS summary/description (may be HTML)
     matched: list[str] = field(default_factory=list)  # watchlist entities present
     image_url: str = ""              # lead image, if the feed carried one
+    body: str = ""                   # full readable article text (hydrated on demand)
 
     def as_row(self) -> dict:
         return {
@@ -208,6 +214,65 @@ def fetch_all(config: dict | None = None) -> list[Article]:
     articles.sort(key=lambda a: a.published or datetime.min.replace(tzinfo=timezone.utc),
                   reverse=True)
     return articles
+
+
+# ── full-text hydration ─────────────────────────────────────────────────────────
+# RSS gives us only a title + teaser blurb. Every model pass downstream is only as
+# deep as its input, so for the handful of articles that actually anchor a built
+# story we fetch the real body with trafilatura. Kept deliberately fail-soft: any
+# scrape that errors, times out, or comes back thin degrades to the RSS summary,
+# so the pipeline never *depends* on a fetch succeeding.
+
+# Below this an extraction is nav chrome / a paywall stub, not an article body —
+# not worth trusting over the RSS teaser.
+MIN_BODY_CHARS = 500
+
+
+def _body_cache_path(url: str) -> Path:
+    return BODY_CACHE / f"{hashlib.sha1(url.encode('utf-8')).hexdigest()}.txt"
+
+
+def article_body(url: str) -> str:
+    """Readable full text for one article URL, cached on disk. Returns "" on any
+    failure or a too-thin extraction. Only successful, substantial fetches are
+    cached — a miss is retried next run rather than poisoned to empty forever."""
+    if not url.startswith("http"):
+        return ""
+    cache = _body_cache_path(url)
+    if cache.exists():
+        return cache.read_text(encoding="utf-8")
+
+    text = ""
+    try:
+        import trafilatura
+
+        downloaded = trafilatura.fetch_url(url)
+        if downloaded:
+            text = (trafilatura.extract(
+                downloaded, include_comments=False, include_tables=False,
+                favor_precision=True,
+            ) or "").strip()
+    except Exception:
+        text = ""
+
+    if len(text) < MIN_BODY_CHARS:
+        return ""                       # don't cache misses; let a later run retry
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(text, encoding="utf-8")
+    return text
+
+
+def hydrate_bodies(arts: list[Article], limit: int = 3) -> int:
+    """Fill `Article.body` in place for the top `limit` articles of a story — the
+    ones that carry its substance. Extraction is the expensive step, so we cap it.
+    Returns how many bodies were successfully hydrated."""
+    got = 0
+    for a in arts[:limit]:
+        if not a.body:
+            a.body = article_body(a.url)
+        if a.body:
+            got += 1
+    return got
 
 
 def check_feeds(config: dict | None = None) -> int:

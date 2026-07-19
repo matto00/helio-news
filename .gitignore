@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 venv/
 .env
-state/          # daily run state (last-ingested set, dated resource ledger)
+# daily run state: dated resource ledger + cached article bodies (state/bodies/)
+state/
 *.log
 .playwright-mcp/

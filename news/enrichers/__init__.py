@@ -63,6 +63,7 @@ def resolve(panel: PanelSpec, story) -> SourceData | None:
 # Imported after SourceData is defined to avoid circular import surprises.
 from . import coverage as _coverage     # noqa: E402
 from . import stocks as _stocks         # noqa: E402
+from . import facts as _facts           # noqa: E402
 
 # Prefix → builder. Add a new capability here (e.g. "sports": _sports.build).
 # Headlines/summaries are not enrichers — run.py renders them into each story's
@@ -70,4 +71,5 @@ from . import stocks as _stocks         # noqa: E402
 REGISTRY = {
     "stock": _stocks.build,
     "coverage": _coverage.build,
+    "facts": _facts.build,
 }

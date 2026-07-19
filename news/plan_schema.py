@@ -29,7 +29,7 @@ CHART_TYPES = {"line", "bar", "pie", "scatter"}
 # sync with news.enrichers.REGISTRY. Unknown prefixes are dropped in validation.
 # Headlines and summaries are rendered into each story's markdown panel by
 # run.py (not bound data panels), so they are not enrichers.
-KNOWN_ENRICHERS = {"stock", "coverage"}
+KNOWN_ENRICHERS = {"stock", "coverage", "facts"}
 
 DOMAINS = {"politics", "sports", "tech", "ai", "markets", "business", "world", "general"}
 
