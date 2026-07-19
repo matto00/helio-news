@@ -33,6 +33,17 @@ KNOWN_ENRICHERS = {"stock", "coverage"}
 
 DOMAINS = {"politics", "sports", "tech", "ai", "markets", "business", "world", "general"}
 
+# Story-level sentiment, set by the `sentiment` gemma/qwen pass (news.agents).
+# Drives the background tint of a story's metric/chart panels only — `neutral`
+# leaves the panel on the default surface. A stock panel overrides this with its
+# own price-movement sign (up = good, down = bad); see run.py.
+SENTIMENTS = {"good", "bad", "neutral"}
+
+
+def norm_sentiment(v) -> str:
+    s = str(v or "").strip().lower()
+    return s if s in SENTIMENTS else "neutral"
+
 
 @dataclass
 class PanelSpec:
@@ -95,6 +106,7 @@ class StorySpec:
     subject: str = ""                 # short theme, used as the panel/section title
     importance: int = 3               # 1 (minor) .. 5 (lead)
     breaking: bool = False            # new/developing today (vs. ongoing coverage)
+    sentiment: str = "neutral"        # good | bad | neutral — tints data panels
     summary: str = ""
     article_urls: list[str] = field(default_factory=list)
     panels: list[PanelSpec] = field(default_factory=list)
@@ -132,6 +144,7 @@ class StorySpec:
             subject=str(raw.get("subject") or "").strip()[:80],
             importance=max(1, min(5, _as_int(raw.get("importance")) or 3)),
             breaking=bool(raw.get("breaking")),
+            sentiment=norm_sentiment(raw.get("sentiment")),
             summary=str(raw.get("summary") or "").strip(),
             article_urls=[u for u in raw.get("article_urls", []) if isinstance(u, str)],
             panels=panels,

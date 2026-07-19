@@ -26,10 +26,38 @@ ollama:
   host: "http://localhost:11434"
   timeout_seconds: 180
 models:
+  # Mechanical passes stay on the small fast model.
   triage: "gemma4:e4b"
   planner: "gemma4:e4b"
   summarizer: "gemma4:e4b"
   layout: "gemma4:e4b"      # sizes every panel on the grid (one call per run)
+  # Editorial passes use a sharper model — they make the day feel edited, not
+  # dumped. qwen3:8b (5.2 GB) fits the GPU cleanly alongside the sequential flow.
+  sentiment: "qwen3:8b"     # tags each story good/bad/neutral → panel tinting
+  curator: "qwen3:8b"       # picks the front page + writes each board's brief
+
+# Story sentiment → panel background tint (metrics/charts only; summaries/photos
+# stay neutral). A stock panel overrides this with its own price-movement sign.
+# Tuned for a light theme — adjust the hex to taste; "" means no tint.
+sentiment:
+  colors:
+    good: "#dcefe1"         # soft green — good news
+    bad: "#f8dcd8"          # soft red — bad news
+    neutral: ""             # default surface
+
+# The day is split across an overview board plus these section boards. `sections`
+# maps a board name → the story domains it collects (triage domains: politics,
+# world, sports, tech, ai, markets, business, general). Domains not listed here
+# appear only in the overview digest. The curator picks which stories lead the
+# overview and writes every board's one-line editor's brief.
+dashboards:
+  overview: "News Overview"     # the aggregate board — biggest stories of the day
+  overview_size: 5              # how many headliner stories it digests
+  sections:
+    "Politics & World": ["politics", "world"]
+    "Tech & AI": ["tech", "ai"]
+    "Sports": ["sports"]
+    "Markets & Business": ["markets", "business"]
 
 # Stocks are for news that MOVES a stock — not a daily price readout. A ticker
 # only earns a chart when its story broke today; set breaking_only: false to go
@@ -45,7 +73,7 @@ stocks:
 helio:
   mcp_command: "node"
   mcp_args: ["/home/matt/Development/helio/helio-mcp/dist/index.js"]
-  dashboard_name: "News Overview"
+  # Dashboard names now live under `dashboards:` (overview + sections).
 
 feeds:
   grounding:            # broad, low-bias wire services

@@ -1,9 +1,13 @@
-"""Dashboard-level "today at a glance" panels.
+"""Dashboard-level "day in review" panels.
 
 Unlike the REGISTRY enrichers these are plan-scoped, not story-scoped, so run.py
 calls them directly rather than through `resolve()`. Everything here is measured
-from the actual fetch — no model involvement, nothing invented — which makes it
-the one section of the dashboard that is always correct and always populated.
+from the actual fetch — no model involvement, nothing invented.
+
+Scope note: the bare count tiles ("Articles scanned", "Stories today") were
+removed deliberately — the dashboards are meant to be dynamic reporting on the
+stories themselves, not a scoreboard of how many there were. What remains are the
+two shape-of-the-day charts, shown only on the overview board.
 """
 
 from __future__ import annotations
@@ -47,32 +51,4 @@ def source_volume(plan, articles):
         mapping={"xAxis": "outlet", "yAxis": "articles"},
         panel_type="chart",
         chart_type="bar",
-    )
-
-
-def volume_metric(plan, articles):
-    """Articles scanned → single KPI tile."""
-    from . import SourceData, T_STR, T_INT
-
-    return SourceData(
-        key="briefing-volume",
-        columns=[{"name": "label", "type": T_STR},
-                 {"name": "articles", "type": T_INT}],
-        rows=[["Articles scanned", len(articles)]],
-        mapping={"value": "articles", "label": "label"},
-        panel_type="metric",
-    )
-
-
-def story_metric(plan, articles):
-    """Stories surfaced → single KPI tile."""
-    from . import SourceData, T_STR, T_INT
-
-    return SourceData(
-        key="briefing-stories",
-        columns=[{"name": "label", "type": T_STR},
-                 {"name": "stories", "type": T_INT}],
-        rows=[["Stories today", len(plan.stories)]],
-        mapping={"value": "stories", "label": "label"},
-        panel_type="metric",
     )

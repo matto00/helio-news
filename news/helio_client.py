@@ -99,8 +99,12 @@ class HelioClient:
 
     # ── build a bound data panel from an enricher SourceData ──────────────────
     async def build_bound_panel(self, dashboard_id: str, prefix: str, title: str,
-                                sd) -> str:
-        """source → trivial pipeline → run → panel → bind. Returns panel id."""
+                                sd, background: str = "") -> str:
+        """source → trivial pipeline → run → panel → bind. Returns panel id.
+
+        `background`, if given, tints the finished panel (sentiment coloring —
+        good news green, bad news red). Applied as a partial appearance patch so
+        it does not disturb a chart panel's chart-type appearance."""
         source = await self.call("create_data_source", {
             "name": f"{prefix}-src-{sd.key}",
             "columns": sd.columns,
@@ -129,22 +133,32 @@ class HelioClient:
             "panelId": panel_id, "dataTypeId": output_type_id,
             "fieldMapping": sd.mapping, "panelType": sd.panel_type,
         })
-        if sd.panel_type == "chart" and sd.chart_type:
-            await self.set_chart_type(panel_id, sd.chart_type)
+        chart_type = sd.chart_type if sd.panel_type == "chart" else None
+        await self._apply_appearance(panel_id, chart_type=chart_type,
+                                     background=background)
         return panel_id
 
-    async def set_chart_type(self, panel_id: str, chart_type: str) -> None:
-        """Switch a chart panel to line/bar/pie/scatter.
+    async def _apply_appearance(self, panel_id: str, *, chart_type: str | None = None,
+                                background: str = "") -> None:
+        """Set a panel's chart type and/or background tint in ONE appearance PATCH.
 
-        The backend decodes `appearance.chart` as a COMPLETE ChartAppearance
-        (jsonFormat5), so a partial {"chartType": …} patch is rejected with a 400
-        — verified against the live API. We therefore resend the full default
-        appearance with only chartType varied.
-        """
-        await self.call("update_panel_appearance", {
-            "panelId": panel_id,
-            "appearance": {"chart": {**CHART_APPEARANCE, "chartType": chart_type}},
-        })
+        The single-item appearance PATCH REPLACES the whole PanelAppearance —
+        every field the payload omits is reset to its default. Verified against
+        the backend: `PanelServiceHelpers.normalizeAppearancePayload` builds a
+        fresh `PanelAppearance`, so an omitted `chart` becomes None (dropping a
+        chartType) and an omitted `background` becomes the default. chartType and
+        the sentiment tint therefore MUST travel together, or the second call
+        would wipe the first. `chart` itself must be a COMPLETE ChartAppearance
+        (see CHART_APPEARANCE) — a bare {"chartType": …} 400s."""
+        appearance: dict = {}
+        if chart_type:
+            appearance["chart"] = {**CHART_APPEARANCE, "chartType": chart_type}
+        if background:
+            appearance["background"] = background
+        if not appearance:
+            return
+        await self.call("update_panel_appearance",
+                        {"panelId": panel_id, "appearance": appearance})
 
     async def add_text_panel(self, dashboard_id: str, title: str, content: str,
                              markdown: bool = True) -> str:
@@ -220,5 +234,8 @@ class HelioClient:
 
 
 def _type_name(prefix: str, key: str) -> str:
-    """helio DataType name — keep it identifier-ish and prefixed for cleanup."""
-    return "news_out_" + key.replace("-", "_")
+    """helio DataType name — identifier-ish, `news_out_`-prefixed for cleanup, and
+    stamped with the board prefix so the same data key (e.g. a ticker) built on two
+    different boards doesn't collide on one shared output-type name."""
+    stem = f"{prefix}-{key}".replace("news-", "", 1).replace("-", "_")
+    return "news_out_" + stem

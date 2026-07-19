@@ -24,7 +24,7 @@ from dataclasses import asdict
 from datetime import date
 
 from . import enrichers
-from .agents import Ollama, enrich, layout
+from .agents import Ollama, curate, enrich, layout, sentiment_pass
 from .enrichers import briefing
 from .fetch import fetch_all, load_config
 from .helio_client import HelioClient
@@ -67,12 +67,62 @@ def _clamp(kind: str, w: int, h: int) -> tuple[int, int]:
     return (max(min_w, min(GRID_COLS, w)), max(min_h, min(max_h, h)))
 
 
+# ── dashboard routing ───────────────────────────────────────────────────────────
+# The day splits across an overview board plus a few section boards (config
+# `dashboards.sections`: board name → the domains it collects). Routing is
+# deterministic from a story's domain; the curator only picks which stories lead
+# the overview and writes each board's brief.
+
+
+def _domain_to_board(config: dict) -> dict[str, str]:
+    sections = config.get("dashboards", {}).get("sections", {})
+    out: dict[str, str] = {}
+    for board, domains in sections.items():
+        for d in domains or []:
+            out[str(d).strip().lower()] = board
+    return out
+
+
+def _board_slug(name: str) -> str:
+    return "".join(c.lower() if c.isalnum() else "-" for c in name).strip("-")
+
+
 def build_plan(config: dict):
+    """Fetch → gemma passes (triage/planner/summarizer) → the two qwen editorial
+    passes (sentiment, curator). Returns (plan, articles, curation)."""
     articles = fetch_all(config)
     print(f"· fetched {len(articles)} fresh articles", file=sys.stderr)
     plan = enrich(articles, config, run_day=date.today())
     print(f"· gemma produced {len(plan.stories)} stories", file=sys.stderr)
-    return plan, articles
+
+    # ── editorial passes: sentiment + curator, both qwen, run back-to-back so the
+    # bigger model is resident only once (the gemma passes above already ran).
+    oc = config.get("ollama", {})
+    models = config.get("models", {})
+    ol = Ollama(oc.get("host", "http://localhost:11434"), oc.get("timeout_seconds", 180))
+
+    tags = sentiment_pass(ol, models.get("sentiment", "qwen3:8b"), plan.stories)
+    for s in plan.stories:
+        s.sentiment = tags.get(s.slug, s.sentiment)
+    pos = sum(1 for s in plan.stories if s.sentiment == "good")
+    neg = sum(1 for s in plan.stories if s.sentiment == "bad")
+    print(f"· sentiment: {pos} good, {neg} bad, "
+          f"{len(plan.stories) - pos - neg} neutral", file=sys.stderr)
+
+    dcfg = config.get("dashboards", {})
+    routing = _domain_to_board(config)
+    boards = list(dcfg.get("sections", {}).keys())
+    stories_brief = [{
+        "slug": s.slug, "board": routing.get(s.domain, dcfg.get("overview", "News Overview")),
+        "headline": s.headline, "subject": s.subject, "importance": s.importance,
+        "breaking": s.breaking, "summary": s.summary,
+    } for s in plan.stories]
+    curation = curate(ol, models.get("curator", "qwen3:8b"), stories_brief,
+                      [dcfg.get("overview", "News Overview")] + boards,
+                      int(dcfg.get("overview_size", 5)))
+    print(f"· curator: {len(curation.get('overview', []))} front-page picks, "
+          f"{len(curation.get('briefs', {}))} briefs", file=sys.stderr)
+    return plan, articles, curation
 
 
 def plan_to_dict(plan: DayPlan) -> dict:
@@ -85,6 +135,40 @@ def plan_to_dict(plan: DayPlan) -> dict:
             for s in plan.stories
         ],
     }
+
+
+def _sentiment_color(sentiment: str, colors: dict) -> str:
+    """Background tint for a story's data panels from its editorial sentiment."""
+    return colors.get(sentiment, "") or ""
+
+
+def _stock_move_color(sd, colors: dict) -> str:
+    """A stock panel is coloured by its OWN price movement, not the story's mood —
+    up = good/green, down = bad/red — read straight off the enricher's numbers."""
+    try:
+        if sd.key.endswith("-metric"):
+            change = sd.rows[0][2]              # [label, price, change_pct]
+        elif sd.key.endswith("-trend"):
+            change = sd.rows[0][1]              # first bucket ("Day") % change
+        else:                                   # price line: last vs first close
+            change = sd.rows[-1][1] - sd.rows[0][1]
+    except (IndexError, TypeError):
+        return ""
+    if change > 0:
+        return colors.get("good", "") or ""
+    if change < 0:
+        return colors.get("bad", "") or ""
+    return ""
+
+
+def _panel_color(sd, story, colors: dict) -> str:
+    """Pick a data panel's tint: stocks by their own movement, everything else by
+    the story's sentiment. Only metric/chart panels are tinted (per the design)."""
+    if sd.panel_type not in ("metric", "chart"):
+        return ""
+    if sd.key.startswith("stock-"):
+        return _stock_move_color(sd, colors)
+    return _sentiment_color(story.sentiment, colors)
 
 
 def story_markdown(story) -> str:
@@ -147,9 +231,86 @@ def _pack(built: list[dict], sizes: dict[int, tuple[int, int]]) -> list[dict]:
     return items
 
 
-async def apply_plan(plan: DayPlan, articles: list, config: dict,
+async def _add_brief(helio, dashboard_id: str, board_name: str, brief: str,
+                     built: list[dict]) -> None:
+    """Prepend a board's editor's brief — the AI-written one-liner that frames the
+    day for this section. A slim full-width banner (sized in _finish_board)."""
+    if not brief:
+        return
+    pid = await helio.add_text_panel(dashboard_id, board_name, f"_{brief.strip()}_")
+    built.append({"id": pid, "kind": "markdown", "title": board_name,
+                  "importance": 5, "chart_type": None, "note": "editor's brief",
+                  "role": "brief"})
+
+
+async def _build_story(helio, dashboard_id: str, prefix: str, story, colors: dict,
+                       seen: set[str], built: list[dict], *, digest: bool = False) -> None:
+    """Render one story onto a board. A section board gets the full treatment
+    (summary + photo + the planner's data panels, tinted by sentiment/movement);
+    the overview gets a `digest` — summary + photo only, so headliner data panels
+    aren't rebuilt off their section board."""
+    arts = getattr(story, "_articles", None) or []
+    md_id = await helio.add_text_panel(dashboard_id, story.title(), story_markdown(story))
+    built.append({"id": md_id, "kind": "markdown", "title": story.title(),
+                  "importance": story.importance, "chart_type": None,
+                  "note": f"summary + {min(len(arts), 6)} headlines"})
+
+    if digest or any(p.type == "image" for p in story.panels):
+        url = story.hero_image()
+        if url:
+            pid = await helio.add_image_panel(dashboard_id, story.title(), url)
+            built.append({"id": pid, "kind": "image", "title": story.title(),
+                          "importance": story.importance, "chart_type": None,
+                          "note": "a photo"})
+
+    if digest:
+        return
+
+    for panel in story.panels:
+        if panel.type == "image" or panel.type not in DATA_PANEL_TYPES:
+            continue
+        sd = enrichers.resolve(panel, story)
+        if sd is None or sd.key in seen:
+            continue
+        seen.add(sd.key)
+        color = _panel_color(sd, story, colors)
+        pid = await helio.build_bound_panel(dashboard_id, prefix, panel.title, sd,
+                                            background=color)
+        built.append({"id": pid, "kind": sd.panel_type, "title": panel.title,
+                      "importance": story.importance, "chart_type": sd.chart_type,
+                      "note": f"{len(sd.rows)} rows"})
+
+
+async def _finish_board(helio, dashboard_id: str, built: list[dict], config: dict) -> None:
+    """Size (gemma layout pass) and place a board's panels. The editor's brief is
+    forced to a slim full-width banner rather than whatever the model guesses."""
+    if not built:
+        return
+    oc = config.get("ollama", {})
+    ol = Ollama(oc.get("host", "http://localhost:11434"), oc.get("timeout_seconds", 180))
+    manifest = [{"id": i, "kind": p["kind"], "title": p["title"],
+                 "importance": p["importance"], "chart_type": p["chart_type"],
+                 "note": p["note"]}
+                for i, p in enumerate(built)]
+    sizes = layout(ol, config.get("models", {}).get("layout", "gemma4:e4b"), manifest)
+    for i, p in enumerate(built):
+        if p.get("role") == "brief":
+            sizes[i] = (GRID_COLS, 3)
+    await helio.set_layout(dashboard_id, _pack(built, sizes))
+
+
+async def apply_plan(plan: DayPlan, articles: list, config: dict, curation: dict,
                      cleanup: bool = True) -> None:
-    dash_name = config.get("helio", {}).get("dashboard_name", "News Overview")
+    """Build the day across an overview board plus the configured section boards."""
+    dcfg = config.get("dashboards", {})
+    overview_name = dcfg.get("overview", "News Overview")
+    overview_size = int(dcfg.get("overview_size", 5))
+    section_names = list(dcfg.get("sections", {}).keys())
+    all_boards = [overview_name] + section_names
+    routing = _domain_to_board(config)
+    colors = config.get("sentiment", {}).get("colors", {})
+    briefs = curation.get("briefs", {})
+
     async with HelioClient.session(config) as helio:
         missing = REQUIRED_DELETE_TOOLS - await helio.tool_names()
         if missing:
@@ -158,79 +319,71 @@ async def apply_plan(plan: DayPlan, articles: list, config: dict,
                 f"(helio-mcp: npm run build) so daily cleanup works."
             )
 
-        dashboard_id = await helio.ensure_dashboard(dash_name)
-        print(f"· dashboard '{dash_name}' → {dashboard_id}", file=sys.stderr)
+        board_ids = {name: await helio.ensure_dashboard(name) for name in all_boards}
+        for name, did in board_ids.items():
+            print(f"· board '{name}' → {did}", file=sys.stderr)
 
+        # One cleanup for the whole run: clear every board, then delete the shared
+        # news-* sources/types once (they're not board-scoped).
         if cleanup:
-            cleared = await helio.clear_dashboard_panels(dashboard_id)
+            cleared = 0
+            for did in board_ids.values():
+                cleared += await helio.clear_dashboard_panels(did)
             gone = await helio.cleanup_news_resources()
             print(f"· cleanup: {cleared} panels, {gone['sources']} sources, "
                   f"{gone['types']} types removed", file=sys.stderr)
 
         prefix = plan.resource_prefix()
-        built: list[dict] = []          # ordered manifest: what exists on the board
-        seen_keys: set[str] = set()     # dedupe identical data across stories
 
-        async def add_bound(sd, title: str, importance: int, note: str) -> None:
-            if sd is None or sd.key in seen_keys:
-                return
-            seen_keys.add(sd.key)
-            pid = await helio.build_bound_panel(dashboard_id, prefix, title, sd)
+        # Route stories to their section board by domain (deterministic).
+        by_board: dict[str, list] = {name: [] for name in section_names}
+        for story in plan.stories:
+            board = routing.get(story.domain)
+            if board in by_board:
+                by_board[board].append(story)
+
+        # ── section boards: full, sentiment-tinted treatment ─────────────────
+        for name in section_names:
+            did = board_ids[name]
+            built: list[dict] = []
+            seen: set[str] = set()
+            await _add_brief(helio, did, name, briefs.get(name), built)
+            for story in sorted(by_board[name], key=lambda s: s.importance, reverse=True):
+                await _build_story(helio, did, f"{prefix}-{_board_slug(name)}",
+                                   story, colors, seen, built)
+            await _finish_board(helio, did, built, config)
+            print(f"· '{name}': {len(built)} panels / {len(by_board[name])} stories",
+                  file=sys.stderr)
+
+        # ── overview: brief + headliner digests + day-in-review ──────────────
+        slug_to_story = {s.slug: s for s in plan.stories}
+        picks = [slug_to_story[s] for s in curation.get("overview", [])
+                 if s in slug_to_story]
+        if not picks:                          # curator returned nothing usable
+            picks = sorted(plan.stories, key=lambda s: s.importance, reverse=True)
+        picks = picks[:overview_size]
+
+        did = board_ids[overview_name]
+        built = []
+        seen = set()
+        await _add_brief(helio, did, overview_name, briefs.get(overview_name), built)
+        for story in picks:
+            await _build_story(helio, did, f"{prefix}-overview", story, colors,
+                               seen, built, digest=True)
+        # Day-in-review: measured shape-of-the-day charts (never model-invented),
+        # overview only. Neutral — these are meta, not good/bad news.
+        for sd, title in ((briefing.domain_mix(plan), "What kind of day"),
+                          (briefing.source_volume(plan, articles), "Who's publishing")):
+            if sd is None or sd.key in seen:
+                continue
+            seen.add(sd.key)
+            pid = await helio.build_bound_panel(did, f"{prefix}-overview", title, sd)
             built.append({"id": pid, "kind": sd.panel_type, "title": title,
-                          "importance": importance, "chart_type": sd.chart_type,
-                          "note": note})
-
-        # ── today at a glance ────────────────────────────────────────────────
-        # Real measurements of the fetch, so this section is always populated and
-        # never model-invented. It also gives the board its metric/pie variety.
-        for sd, title, note in (
-            (briefing.volume_metric(plan, articles), "Articles scanned", "one number"),
-            (briefing.story_metric(plan, articles), "Stories today", "one number"),
-            (briefing.domain_mix(plan), "What kind of day", "pie, few slices"),
-            (briefing.source_volume(plan, articles), "Who's publishing", "bar chart"),
-        ):
-            await add_bound(sd, title, 3, note)
-
-        # ── per-story sections ───────────────────────────────────────────────
-        for story in sorted(plan.stories, key=lambda s: s.importance, reverse=True):
-            arts = getattr(story, "_articles", None) or []
-            md_id = await helio.add_text_panel(dashboard_id, story.title(),
-                                               story_markdown(story))
-            built.append({"id": md_id, "kind": "markdown", "title": story.title(),
-                          "importance": story.importance, "chart_type": None,
-                          "note": f"summary + {min(len(arts), 6)} headlines"})
-
-            for panel in story.panels:
-                if panel.type == "image":
-                    url = story.hero_image()
-                    if url:
-                        pid = await helio.add_image_panel(dashboard_id, panel.title, url)
-                        built.append({"id": pid, "kind": "image", "title": panel.title,
-                                      "importance": story.importance,
-                                      "chart_type": None, "note": "a photo"})
-                    continue
-                if panel.type not in DATA_PANEL_TYPES:
-                    continue
-                sd = enrichers.resolve(panel, story)
-                await add_bound(sd, panel.title, story.importance,
-                                f"{len(sd.rows)} rows" if sd else "")
-
-        # ── the layout pass sizes what we actually built ─────────────────────
-        oc = config.get("ollama", {})
-        ol = Ollama(oc.get("host", "http://localhost:11434"), oc.get("timeout_seconds", 180))
-        manifest = [{"id": i, "kind": p["kind"], "title": p["title"],
-                     "importance": p["importance"], "chart_type": p["chart_type"],
-                     "note": p["note"]}
-                    for i, p in enumerate(built)]
-        sizes = layout(ol, config.get("models", {}).get("layout", "gemma4:e4b"), manifest)
-        print(f"· layout pass sized {len(sizes)}/{len(built)} panels", file=sys.stderr)
-
-        await helio.set_layout(dashboard_id, _pack(built, sizes))
-
-        kinds = ", ".join(f"{k}×{sum(1 for p in built if p['kind'] == k)}"
-                          for k in sorted({p["kind"] for p in built}))
-        print(f"· built {len(built)} panels across {len(plan.stories)} stories "
-              f"({kinds})", file=sys.stderr)
+                          "importance": 2, "chart_type": sd.chart_type,
+                          "note": "day in review"})
+        await _finish_board(helio, did, built, config)
+        print(f"· '{overview_name}': {len(built)} panels / {len(picks)} headliners",
+              file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -242,18 +395,18 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     config = load_config()
-    plan, articles = build_plan(config)
+    plan, articles, curation = build_plan(config)
 
     if args.plan_only:
-        print(json.dumps(plan_to_dict(plan), indent=2))
+        print(json.dumps({**plan_to_dict(plan), "curation": curation}, indent=2))
         return 0
 
     if not plan.stories:
         print("No stories produced; nothing to build.", file=sys.stderr)
         return 1
 
-    asyncio.run(apply_plan(plan, articles, config, cleanup=not args.keep))
-    print("✅ dashboard refreshed.", file=sys.stderr)
+    asyncio.run(apply_plan(plan, articles, config, curation, cleanup=not args.keep))
+    print("✅ dashboards refreshed.", file=sys.stderr)
     return 0
 
 

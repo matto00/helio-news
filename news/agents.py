@@ -229,6 +229,102 @@ def summarize_story(ollama: Ollama, model: str, story: dict, arts: list[Article]
     return out if isinstance(out, dict) else {}
 
 
+# ── pass 3b: sentiment ──────────────────────────────────────────────────────────
+# A separate editorial pass (qwen3:8b, not gemma) run once over the whole day. It
+# tags each story good/bad/neutral so run.py can tint that story's metric/chart
+# panels — the "good news is green, bad news is red" read. Batched into one call
+# (not per-story) so the bigger model is resident only briefly.
+
+_SENTIMENT_SYS = (
+    "You are a news editor tagging the TONE of each story for a reader's "
+    "dashboard. For each story decide whether the news is, on balance, good, "
+    "bad, or neutral FROM A GENERAL READER'S PERSPECTIVE — a peace deal, a "
+    "cure, a team winning, a strong earnings beat = good; a disaster, a "
+    "scandal, a crash, a loss, a layoff = bad; procedural, mixed, or ambiguous "
+    "= neutral. Judge the events, not the writing. Return ONLY JSON "
+    '{"sentiments":[{"slug","sentiment"}]} with a sentiment for EVERY slug.'
+)
+
+
+def sentiment_pass(ollama: Ollama, model: str, stories: list) -> dict[str, str]:
+    """Tag every story good/bad/neutral in one call. Returns {slug: sentiment};
+    slugs the model omits or mislabels default to neutral in norm_sentiment."""
+    from .plan_schema import norm_sentiment
+
+    if not stories:
+        return {}
+    lines = [
+        f'- slug="{s.slug}" [{s.domain}] {s.headline}'
+        + (f" — {s.summary[:160]}" if s.summary else "")
+        for s in stories
+    ]
+    out = ollama.chat_json(
+        model, _SENTIMENT_SYS,
+        "Stories:\n" + "\n".join(lines),
+        temperature=0.1,
+    )
+    tags: dict[str, str] = {}
+    for item in (out.get("sentiments", []) if isinstance(out, dict) else []):
+        if isinstance(item, dict) and item.get("slug"):
+            tags[str(item["slug"])] = norm_sentiment(item.get("sentiment"))
+    return tags
+
+
+# ── pass 3c: curator (editor-in-chief) ──────────────────────────────────────────
+# The pass that makes the split-dashboard day feel edited rather than dumped. Also
+# qwen3:8b. Given the day's stories (already routed to section boards in code), it
+# (1) picks the front-page "Top Stories" digest across all sections and (2) writes
+# a one-line editor's brief per board. Routing stays in code (deterministic from
+# domain); the model does the judgement calls a code rule can't — "which of these
+# is actually the day's lead" and "how would an editor frame this section today".
+
+_CURATOR_SYS = (
+    "You are the editor-in-chief laying out today's news dashboards. You are "
+    "given the day's stories, each already assigned to a section board. Do two "
+    "things:\n"
+    "1. Pick the {n} strongest stories overall for the front-page digest — the "
+    "ones a reader must see first. Spread them across sections; don't take all "
+    "from one. Return their slugs in priority order.\n"
+    "2. Write a ONE-sentence editor's brief for EACH board named below, framing "
+    "what its stories add up to today (e.g. 'Washington is consumed by the "
+    "shutdown fight while the Middle East ceasefire holds'). If a board has no "
+    "stories, write a short 'quiet day' line for it.\n"
+    'Return ONLY JSON {"overview":[slug,...],"briefs":{"<board>":"<sentence>"}} '
+    "— use the board names EXACTLY as given."
+)
+
+
+def curate(ollama: Ollama, model: str, stories_brief: list[dict],
+           boards: list[str], overview_size: int) -> dict:
+    """Editor-in-chief pass. `stories_brief` is [{slug,board,headline,subject,
+    importance,breaking,summary}]. Returns {"overview":[slug,...],
+    "briefs":{board: sentence}} — callers must tolerate missing keys."""
+    if not stories_brief:
+        return {"overview": [], "briefs": {}}
+    lines = []
+    for s in stories_brief:
+        flag = " BREAKING" if s.get("breaking") else ""
+        lines.append(
+            f'- slug="{s["slug"]}" board="{s["board"]}" '
+            f'importance={s.get("importance", 3)}/5{flag}: {s.get("headline", "")}'
+            + (f" — {s['summary'][:160]}" if s.get("summary") else "")
+        )
+    user = (
+        "Boards: " + ", ".join(f'"{b}"' for b in boards) + "\n\n"
+        "Stories:\n" + "\n".join(lines) + "\n\n"
+        "Assemble the front page and write each board's brief."
+    )
+    out = ollama.chat_json(
+        model, _CURATOR_SYS.replace("{n}", str(overview_size)), user, temperature=0.3,
+    )
+    if not isinstance(out, dict):
+        return {"overview": [], "briefs": {}}
+    overview = [s for s in out.get("overview", []) if isinstance(s, str)]
+    briefs = {k: str(v).strip() for k, v in (out.get("briefs") or {}).items()
+              if isinstance(k, str) and str(v).strip()}
+    return {"overview": overview, "briefs": briefs}
+
+
 # ── pass 4: layout ─────────────────────────────────────────────────────────────
 # Sizing used to be a formula in run.py. It's a judgement call — how much room a
 # story deserves depends on what it *is*, not just how many headlines it has — so
