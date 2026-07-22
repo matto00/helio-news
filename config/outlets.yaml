@@ -89,6 +89,25 @@ stocks:
   # …unless a non-breaking story is this important anyway (5 = lead story only).
   min_importance: 5
 
+# Contextual data series (the `series:` enricher). When a story is ABOUT a
+# trackable quantity, the planner is offered a REAL public dataset for it —
+# fetched from FRED or Yahoo Finance, put on a trend line, captioned with its
+# source. Matching is by keyword centrality (a keyword in the headline or an
+# article title), so keep keywords SPECIFIC ("gas price", not "gas") to avoid
+# false matches. `provider` ∈ fred | yahoo; `id` is the provider's series code /
+# symbol; `fidelity: monthly` reduces a dense daily/weekly series to a monthly
+# average IN THE HELIO PIPELINE (groupBy month → avg). FRED needs a free
+# FRED_API_KEY in .env (gitignored); without it, FRED series are simply skipped.
+series:
+  - { name: "US inflation (CPI)",  keywords: ["inflation", "cpi", "consumer price index"], provider: fred,  id: CPIAUCSL }
+  - { name: "Gas prices",          keywords: ["gas price", "gasoline price", "price at the pump"], provider: fred,  id: GASREGW, fidelity: monthly }
+  - { name: "Unemployment rate",   keywords: ["unemployment rate", "jobless rate"],       provider: fred,  id: UNRATE }
+  - { name: "30-yr mortgage rate", keywords: ["mortgage rate", "30-year mortgage"],        provider: fred,  id: MORTGAGE30US }
+  - { name: "Egg prices",          keywords: ["egg price", "price of eggs"],               provider: fred,  id: APU0000708111 }
+  - { name: "Crude oil",           keywords: ["oil price", "crude oil", "price of oil", "opec"], provider: yahoo, id: "CL=F",   fidelity: monthly }
+  - { name: "Gold",                keywords: ["gold price", "price of gold", "gold futures"],   provider: yahoo, id: "GC=F",   fidelity: monthly }
+  - { name: "Bitcoin",             keywords: ["bitcoin price", "btc price"],               provider: yahoo, id: "BTC-USD", fidelity: monthly }
+
 # The helio MCP server this project drives (Python spawns it over stdio; the PAT
 # lives in the server's own env, never here). Override via env HELIO_MCP_CMD /
 # HELIO_PAT / HELIO_API_BASE_URL if your paths differ.

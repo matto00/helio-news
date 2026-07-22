@@ -69,7 +69,8 @@ everything traceable to a source sentence.
 | `news/fetch.py` | RSS ingestion, lead-image extraction, full-text hydration (trafilatura, cached in `state/bodies/`), `--check` feed validator |
 | `news/agents.py` | the model sequence (triage → extract → critic → planner → summarizer → layout) + sentiment/curator editorial passes |
 | `news/plan_schema.py` | the planner contract; validates/repairs gemma output |
-| `news/enrichers/` | pluggable aux-data: `stocks.py` (yfinance), `coverage.py`, `briefing.py` |
+| `news/enrichers/` | pluggable aux-data: `stocks.py` (yfinance), `series.py` (contextual data), `coverage.py`, `briefing.py`, `facts.py` |
+| `news/providers/` | real external data sources for `series:` — `fred.py` (economic series), `yahoo.py` (commodities/FX/crypto) |
 | `news/helio_client.py` | MCP client wrapper (spawns the helio MCP server over stdio) |
 | `news/run.py` | daily driver (`--plan-only`, `--keep`) + the grid packer |
 | `deploy/` | systemd system service + wake-from-suspend timer |
@@ -87,6 +88,7 @@ invented by a model.
 | `stock:TICKER:1d\|1w\|1mo` | yfinance | **breaking** tech/markets stories only |
 | `stock:TICKER:trend` | yfinance | day/week/month % change, as a bar |
 | `stock:TICKER` (metric) | yfinance | latest price + day change |
+| `series:<provider>:<id>[:monthly]` | a **real public dataset** (FRED / Yahoo) for a quantity the story is about — put on a trend line, captioned with its source; `:monthly` aggregates a dense daily series to a monthly average *in a helio pipeline* | a configured series (`series:` in config) is central to the story |
 | `coverage:sources` | the story's own articles | ≥3 outlets covering it |
 | `coverage:timeline` | article timestamps | ≥3 distinct hours — shows a story breaking |
 | briefing pie/bar/metrics | the day's fetch stats | always (the "at a glance" strip) |
@@ -103,6 +105,10 @@ python -m venv .venv && ./.venv/bin/pip install -r requirements.txt
 cat > .env <<'EOF'
 HELIO_PAT=helio_pat_...
 HELIO_API_BASE_URL=https://helio-backend-...run.app
+# optional: enables FRED economic series (CPI, gas, unemployment…) in the
+# `series:` enricher. Free key from https://fred.stlouisfed.org/docs/api/api_key.html
+# Yahoo-backed series (oil, gold, bitcoin) work without any key.
+FRED_API_KEY=...
 EOF
 
 # ollama must be serving the models named in config/outlets.yaml:

@@ -178,16 +178,30 @@ on the live MCP (throwaway board, created + deleted).
 type* (flat → silently dropped); `collection`/`timeline` go through
 `create_panel`, not the proposal path, on the current `dist`.
 
-### P2 — series enricher + adapters
+### P2 — series enricher + adapters — ✅ DONE (verified end-to-end against live MCP)
 
-1. `news/providers/{fred,yahoo}.py`; refactor `stocks.py` onto `yahoo.py`.
-2. `news/enrichers/series.py` + register in `REGISTRY` / `KNOWN_ENRICHERS`.
-3. `outlets.yaml` `series:` map + `_central_series()` centrality gate mirroring
-   `_central_tickers`.
-4. Offer `series:*` from `story_offers()`; gate like stocks.
-5. `SourceData.steps` + real pipeline aggregation in `build_bound_panel`
-   (validate via `analyze_pipeline`).
-6. Annotated + captioned contextual chart (reuses P1 #3/#4).
+1. ✅ `news/providers/{__init__,fred,yahoo}.py` — a `Series` dataclass carrying
+   provenance (`source`/`url`); `yahoo.fetch` (keyless, commodities/FX/crypto/
+   equities) and `fred.fetch` (gated on `FRED_API_KEY`, returns None without it).
+   *(stocks.py left on its own yfinance calls for now — a later cleanup can
+   route it through `providers/yahoo.py`; not needed for P2.)*
+2. ✅ `news/enrichers/series.py` — `series:<provider>:<id>[:monthly]`; registered
+   in `REGISTRY` + `KNOWN_ENRICHERS`.
+3. ✅ `outlets.yaml` `series:` map (8 series: CPI, gas, unemployment, mortgage,
+   eggs, oil, gold, bitcoin) + `agents._central_series()` centrality gate
+   (headline/title keyword), sports domain excluded.
+4. ✅ `story_offers()` emits `series:*` offers when a configured series is central.
+5. ✅ `SourceData.steps` + `pipeline_steps()`; `build_bound_panel` loops the steps
+   (default identity select). `:monthly` runs a real `aggregate` (groupBy month →
+   avg) + `sort` — daily→monthly fidelity reduction **in the pipeline**.
+6. ✅ Annotated (`Source: FRED/Yahoo — <id>`) + smooth/area contextual line
+   (reuses P1 chart config).
+
+**Verified:** live yahoo fetch (252 daily crude points); the aggregation shape on
+the real MCP (5 rows → 3 monthly); and the *whole* path through the pipeline's
+own `HelioClient` — panel bound to `avg_value`, a column that exists only after
+the aggregate step, proving the multi-step pipeline ran. All probes cleaned up
+(zero residue). FRED path needs a free `FRED_API_KEY` in `.env` to activate.
 
 ### P3 — research subagent (gated, grounded)
 

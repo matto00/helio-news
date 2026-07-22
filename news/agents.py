@@ -240,7 +240,8 @@ _PLANNER_SYS = (
 
 
 def story_offers(story: dict, arts: list[Article], story_tickers: dict[str, str],
-                 has_image: bool, n_facts: int = 0) -> list[tuple[str, str]]:
+                 has_image: bool, n_facts: int = 0,
+                 series_specs: list[dict] | None = None) -> list[tuple[str, str]]:
     """The real menu for one story: (data key, human description) for every panel
     whose data we can actually produce right now. Computed in code — never by the
     model — so the planner can only pick things that will really render."""
@@ -274,6 +275,23 @@ def story_offers(story: dict, arts: list[Article], story_tickers: dict[str, str]
                        f"type=chart — {name} ({tk}) % change over day / week / month (bar)"))
         offers.append((f"stock:{tk}",
                        f"type=metric — {name} ({tk}) latest price + day change"))
+
+    # Contextual data series: a real public dataset for a quantity this story is
+    # about (inflation, gas, oil, …), fetched from FRED/Yahoo and put on a trend
+    # line. Only offered when a configured series is central to the story.
+    for spec in (series_specs or []):
+        prov, sid = str(spec.get("provider", "")).lower(), str(spec.get("id", ""))
+        if not prov or not sid:
+            continue
+        key = f"series:{prov}:{sid}"
+        fidelity = str(spec.get("fidelity", "")).lower()
+        if fidelity == "monthly":
+            key += ":monthly"
+        shape = "monthly average" if fidelity == "monthly" else "as reported"
+        offers.append((key,
+                       f"type=chart — {spec.get('name', sid)}: the real multi-year "
+                       f"trend from {prov.upper()} ({shape}), to put this story in "
+                       f"context (line)"))
     return offers
 
 
@@ -695,6 +713,28 @@ def _central_tickers(headline: str, arts: list[Article], config: dict) -> dict[s
     return out
 
 
+# A story about a quantifiable phenomenon (inflation, gas, oil) gets a real data
+# series only when the phenomenon is CENTRAL — a configured keyword in the
+# headline or an article TITLE — so an incidental mention doesn't drag in a chart.
+# Sports is excluded outright: "gold"/"record" etc. collide with medal/stat
+# language, and a series has no place on a game story anyway.
+SERIES_SKIP_DOMAINS = {"sports"}
+
+
+def _central_series(headline: str, arts: list[Article], config: dict) -> list[dict]:
+    """Configured data series whose keyword is central to this story → the series
+    specs to offer. Same centrality test as `_central_tickers` (headline or an
+    article title, not the loose ranking match)."""
+    hay = (headline + " " + " ".join(a.title for a in arts)).lower()
+    out = []
+    for spec in config.get("series", []):
+        if not spec.get("provider") or not spec.get("id"):
+            continue
+        if any(str(kw).lower() in hay for kw in spec.get("keywords", [])):
+            out.append(spec)
+    return out
+
+
 def _wants_stock(story: dict, config: dict) -> bool:
     """Stocks are for news that MOVES a stock, not a daily ticker readout. A
     company's chart shows up when the story broke today or is a lead item —
@@ -749,8 +789,10 @@ def enrich(articles: list[Article], config: dict, run_day: date | None = None) -
 
         tickers = (_central_tickers(st.get("headline", ""), arts, config)
                    if _wants_stock(st, config) else {})
+        series_specs = ([] if str(st.get("domain", "")).lower() in SERIES_SKIP_DOMAINS
+                        else _central_series(st.get("headline", ""), arts, config))
         has_image = any(getattr(a, "image_url", "") for a in arts)
-        offers = story_offers(st, arts, tickers, has_image, len(facts))
+        offers = story_offers(st, arts, tickers, has_image, len(facts), series_specs)
 
         with timed("planner"):
             panels = plan_story(ollama, models.get("planner", "gpt-oss:latest"), st, arts,

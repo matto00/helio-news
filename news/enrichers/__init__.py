@@ -48,8 +48,22 @@ class SourceData:
     density: str | None = None                 # table: config.density (condensed|normal|spacious)
     column_order: list[str] | None = None      # table: config.columnOrder (visible cols, in order)
 
+    # Pipeline transform steps to apply over the source, in order, as
+    # [{"type": "aggregate"|"sort"|…, "config": {…}}]. Default (None) = a single
+    # identity `select` of all columns (today's behaviour). An enricher sets this
+    # to make helio do real work — e.g. groupBy month + avg to reduce a daily
+    # series to a monthly trend. The `mapping` must reference the FINAL output
+    # columns these steps produce, not the source columns.
+    steps: list[dict] | None = None
+
     def column_names(self) -> list[str]:
         return [c["name"] for c in self.columns]
+
+    def pipeline_steps(self) -> list[dict]:
+        """The transform steps to add to this panel's pipeline — the enricher's
+        own `steps` if given, else a single identity select of every column."""
+        return self.steps or [{"type": "select",
+                               "config": {"fields": self.column_names()}}]
 
     def panel_config(self) -> dict:
         """The create_panel `config` for this panel_type — v1.5 subtype config
@@ -98,6 +112,7 @@ def resolve(panel: PanelSpec, story) -> SourceData | None:
 from . import coverage as _coverage     # noqa: E402
 from . import stocks as _stocks         # noqa: E402
 from . import facts as _facts           # noqa: E402
+from . import series as _series         # noqa: E402
 
 # Prefix → builder. Add a new capability here (e.g. "sports": _sports.build).
 # Headlines/summaries are not enrichers — run.py renders them into each story's
@@ -106,4 +121,5 @@ REGISTRY = {
     "stock": _stocks.build,
     "coverage": _coverage.build,
     "facts": _facts.build,
+    "series": _series.build,
 }

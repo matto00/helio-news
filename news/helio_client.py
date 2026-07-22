@@ -117,11 +117,14 @@ class HelioClient:
             "outputDataTypeName": _type_name(prefix, sd.key),
         })
         pipeline_id = pipe["id"]
-        # Identity select so the pipeline has explicit output columns, then run.
-        await self.call("add_pipeline_step", {
-            "pipelineId": pipeline_id, "type": "select",
-            "config": {"fields": sd.column_names()},
-        })
+        # Apply the enricher's transform steps (default: an identity select so the
+        # pipeline has explicit output columns). A series enricher supplies real
+        # steps here — e.g. groupBy month + avg — so helio does the aggregation.
+        for step in sd.pipeline_steps():
+            await self.call("add_pipeline_step", {
+                "pipelineId": pipeline_id, "type": step["type"],
+                "config": step.get("config", {}),
+            })
         run = await self.call("run_pipeline", {"pipelineId": pipeline_id})
         output_type_id = run["outputDataTypeId"]
 
