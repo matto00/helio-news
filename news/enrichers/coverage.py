@@ -45,6 +45,8 @@ def build(arg, panel, story):
                 rows=rows,
                 mapping={"columns": "outlet,articles"},
                 panel_type="table",
+                density="condensed",
+                column_order=["outlet", "articles"],
             )
         return SourceData(
             key=f"coverage-{story.slug}-sources",
@@ -54,6 +56,8 @@ def build(arg, panel, story):
             mapping={"xAxis": "outlet", "yAxis": "articles"},
             panel_type="chart",
             chart_type="bar",
+            # Outlet names read better along a horizontal axis.
+            chart_options={"orientation": "horizontal"},
         )
 
     if mode == "timeline":

@@ -125,9 +125,14 @@ class HelioClient:
         run = await self.call("run_pipeline", {"pipelineId": pipeline_id})
         output_type_id = run["outputDataTypeId"]
 
-        panel = await self.call("create_panel", {
-            "dashboardId": dashboard_id, "type": sd.panel_type, "title": title,
-        })
+        # v1.5 subtype config (collection base/layout, chart display options +
+        # annotation, table density/order) travels at create time; bind_panel
+        # merge-patches the binding on top without disturbing it.
+        create_args = {"dashboardId": dashboard_id, "type": sd.panel_type, "title": title}
+        config = sd.panel_config()
+        if config:
+            create_args["config"] = config
+        panel = await self.call("create_panel", create_args)
         panel_id = panel["id"]
         await self.call("bind_panel", {
             "panelId": panel_id, "dataTypeId": output_type_id,
@@ -171,15 +176,20 @@ class HelioClient:
         return panel["id"]
 
     async def add_image_panel(self, dashboard_id: str, title: str, image_url: str,
-                              fit: str = "cover") -> str:
+                              fit: str = "cover", caption: str = "") -> str:
         """An image panel is unbound content — no source/pipeline needed, the
         browser fetches the URL straight from the outlet's CDN. `fit` ∈
-        contain|cover|fill; `cover` fills the panel without letterboxing."""
+        contain|cover|fill; `cover` fills the panel without letterboxing.
+        `caption` (v1.5) renders as a strip beneath the photo — we use it for the
+        credit line (headline + outlet)."""
+        config: dict = {"imageUrl": image_url, "imageFit": fit}
+        if caption:
+            config["caption"] = caption
         panel = await self.call("create_panel", {
             "dashboardId": dashboard_id,
             "type": "image",
             "title": title,
-            "config": {"imageUrl": image_url, "imageFit": fit},
+            "config": config,
         })
         return panel["id"]
 

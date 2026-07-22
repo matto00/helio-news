@@ -32,6 +32,7 @@ def domain_mix(plan):
         mapping={"xAxis": "domain", "yAxis": "stories"},
         panel_type="chart",
         chart_type="pie",
+        chart_options={"donutHolePct": 45, "showPercentLabels": True},
     )
 
 
@@ -51,4 +52,6 @@ def source_volume(plan, articles):
         mapping={"xAxis": "outlet", "yAxis": "articles"},
         panel_type="chart",
         chart_type="bar",
+        # Outlet names are long — a horizontal bar reads them without rotating.
+        chart_options={"orientation": "horizontal"},
     )

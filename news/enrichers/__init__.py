@@ -32,14 +32,48 @@ class SourceData:
     columns: list[dict]                         # [{"name","type"}, ...]
     rows: list[list]                            # row-major values
     mapping: dict[str, str]                     # bind_panel fieldMapping
-    panel_type: str                             # metric | chart | table
+    panel_type: str                             # metric | chart | table | collection
     # line | bar | pie | scatter. The enricher picks the shape that suits its
     # own data (a % -change comparison is a bar, a price history is a line);
     # the planner may override it. Ignored for non-chart panels.
     chart_type: str | None = None
 
+    # ── v1.5 panel config (create_panel `config`) ─────────────────────────────
+    # All optional; each is consumed only for the panel_type it belongs to, so an
+    # enricher sets just the ones that apply to its own shape.
+    chart_options: dict | None = None          # chart: config.chartOptions (per chart type)
+    annotation: str | None = None              # chart: config.annotation — source-attribution footnote
+    base_type: str | None = None               # collection: config.baseType (e.g. "metric")
+    layout: str | None = None                  # collection: config.layout (grid|list)
+    density: str | None = None                 # table: config.density (condensed|normal|spacious)
+    column_order: list[str] | None = None      # table: config.columnOrder (visible cols, in order)
+
     def column_names(self) -> list[str]:
         return [c["name"] for c in self.columns]
+
+    def panel_config(self) -> dict:
+        """The create_panel `config` for this panel_type — v1.5 subtype config
+        (collection base/layout, chart display options + annotation, table
+        density/order). Empty when nothing applies (metric, or an unadorned
+        chart), so the caller can omit `config` entirely."""
+        cfg: dict = {}
+        if self.panel_type == "collection":
+            cfg["baseType"] = self.base_type or "metric"
+            cfg["layout"] = self.layout or "grid"
+        elif self.panel_type == "chart":
+            # chartOptions is keyed BY CHART TYPE ({bar:{…}} / {line:{…}}); a flat
+            # dict is silently dropped by the backend. Nest under the final
+            # chart_type (which the planner may have overridden via resolve()).
+            if self.chart_options and self.chart_type:
+                cfg["chartOptions"] = {self.chart_type: self.chart_options}
+            if self.annotation:
+                cfg["annotation"] = self.annotation
+        elif self.panel_type == "table":
+            if self.density:
+                cfg["density"] = self.density
+            if self.column_order:
+                cfg["columnOrder"] = self.column_order
+        return cfg
 
 
 def resolve(panel: PanelSpec, story) -> SourceData | None:

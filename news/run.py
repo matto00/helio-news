@@ -41,6 +41,7 @@ _FALLBACK = {
     "chart": (6, 9),
     "metric": (3, 4),
     "table": (4, 7),
+    "collection": (4, 6),
     "image": (6, 8),
 }
 
@@ -51,6 +52,7 @@ _FALLBACK = {
 _BOUNDS = {
     "chart": (4, 6, 24),
     "metric": (2, 3, 5),      # a single number never needs to be tall
+    "collection": (3, 4, 24),  # a tile grid — wants some width to lay out cards
     "image": (3, 5, 24),
     "table": (3, 4, 24),
     "markdown": (3, 5, 24),
@@ -252,7 +254,12 @@ async def _build_story(helio, dashboard_id: str, prefix: str, story, colors: dic
     if digest or any(p.type == "image" for p in story.panels):
         url = story.hero_image()
         if url:
-            pid = await helio.add_image_panel(dashboard_id, story.title(), url)
+            # Credit strip beneath the photo: the story's headline + the outlet
+            # the image came from (v1.5 image caption).
+            src = next((a.source for a in arts if getattr(a, "image_url", "")), "")
+            caption = story.headline + (f" — {src}" if src else "")
+            pid = await helio.add_image_panel(dashboard_id, story.title(), url,
+                                              caption=caption)
             built.append({"id": pid, "kind": "image", "title": story.title(),
                           "importance": story.importance, "chart_type": None,
                           "note": "a photo"})

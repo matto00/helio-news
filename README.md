@@ -83,7 +83,7 @@ invented by a model.
 |-------|--------|------|
 | markdown (summary + headlines) | the clustered articles | every story |
 | image | the widest photo any clustered article carries | planner's call; needs a feed that ships images |
-| `facts:numbers` ("By the numbers") | figures extracted from the article bodies, each quote-grounded + critic-audited | ≥2 verified figures survive extraction |
+| `facts:numbers` ("By the numbers", a grid of metric tiles) | figures extracted from the article bodies, each quote-grounded + critic-audited | ≥2 verified figures survive extraction |
 | `stock:TICKER:1d\|1w\|1mo` | yfinance | **breaking** tech/markets stories only |
 | `stock:TICKER:trend` | yfinance | day/week/month % change, as a bar |
 | `stock:TICKER` (metric) | yfinance | latest price + day change |
@@ -148,6 +148,17 @@ Schedule it: see `deploy/news.service` (installs as a systemd *user* timer).
   `update_panel_appearance` requires resending a *complete* `ChartAppearance`;
   a partial `{"chartType": "bar"}` is rejected with a 400. See
   `helio_client.CHART_APPEARANCE`.
+- **`config.chartOptions` is keyed BY CHART TYPE.** The display options
+  (`{smooth,areaFill}` for line, `{orientation,stacking}` for bar,
+  `{donutHolePct}` for pie) must be nested under the chart-type key —
+  `{"line": {...}}`, not a flat `{...}`. A flat dict is **silently dropped**
+  (no error, options just don't apply). `SourceData.panel_config()` nests them
+  under `chart_type` for you.
+- **`collection` / `timeline` panels: use `create_panel`, not the proposal
+  path.** The built `dist` MCP's `apply_proposal` schema still enumerates
+  `divider` but not `collection`/`timeline` (HEAD source has them — schema drift
+  in the deployed build). `facts:numbers` renders as a `collection` of metric
+  tiles via `create_panel` + `bind_panel(panelType="collection")`.
 - **Image panels are unbound** — `config: {imageUrl, imageFit}`, no source or
   pipeline. `imageFit` ∈ `contain|cover|fill`.
 - **Feeds advertise the smallest image first.** The Guardian lists 140/460/700px

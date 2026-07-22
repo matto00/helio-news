@@ -253,7 +253,8 @@ def story_offers(story: dict, arts: list[Article], story_tickers: dict[str, str]
     if n_facts >= MIN_NUMERIC_FACTS:
         offers.append(("facts:numbers",
                        f"type=table — the {n_facts} key figures in this story "
-                       f"(amounts, counts, %) pulled and fact-checked from the reporting"))
+                       f"(amounts, counts, %) pulled and fact-checked from the "
+                       f"reporting, shown as a grid of stat tiles"))
 
     for mode in _coverage.available(arts):
         if mode == "sources":
@@ -620,6 +621,8 @@ _LAYOUT_SYS = (
     "- markdown: needs ~3 rows for the summary plus ~1 per headline. Never < 5.\n"
     "- chart: unreadable below w=4 or h=6. Give real charts h=8-10.\n"
     "- metric: a single number. Small — around w=3, h=4. Never taller than 5.\n"
+    "- collection: a grid of stat tiles (one per figure). Wants w=4-6; height "
+    "grows with the number of tiles — around h=5-8.\n"
     "- image: a photo. Wants w=4-6 and h=7-10; too short and it crops badly.\n"
     "- table: ~2 rows of header plus 1 per data row.\n"
     "- Give the lead story (importance 5) more room than a minor one.\n"

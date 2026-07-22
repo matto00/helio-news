@@ -85,6 +85,7 @@ def build(arg, panel, story):
             mapping={"xAxis": "period", "yAxis": "change_pct"},
             panel_type="chart",
             chart_type="bar",
+            annotation="Source: Yahoo Finance",
         )
 
     # ── metric: latest price + day change ────────────────────────────────────
@@ -123,4 +124,6 @@ def build(arg, panel, story):
         mapping={"xAxis": xlabel, "yAxis": "close"},
         panel_type="chart",
         chart_type="line",
+        chart_options={"smooth": True, "areaFill": True, "showPoints": False},
+        annotation="Source: Yahoo Finance",
     )
