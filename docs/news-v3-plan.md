@@ -203,14 +203,37 @@ own `HelioClient` — panel bound to `avg_value`, a column that exists only afte
 the aggregate step, proving the multi-step pipeline ran. All probes cleaned up
 (zero residue). FRED path needs a free `FRED_API_KEY` in `.env` to activate.
 
-### P3 — research subagent (gated, grounded)
+### P3 — research agent (gated, grounded) — ✅ DONE (off by default)
 
-1. Trigger only when a lead/breaking story wants data and no `series:` matched.
-2. Subagent: search → authoritative source (allowlist) → extract figures **with
-   source** → CSV + citation.
-3. Critic gate (relevance + copied-not-computed), mirroring `facts`.
-4. Emit shared `SourceData`; provenance caption mandatory.
-5. Budget + cache guards.
+Built as a **Claude + web-search** call rather than a Claude Code subagent —
+the daily run is an unattended Python process on local ollama, so the "agent"
+had to be something it can invoke at 07:00: the Anthropic SDK with the
+`web_search_20260209` server tool.
+
+1. ✅ `news/providers/research.py` — `research_series(story, bodies, config)`:
+   one `client.messages.create` (adaptive thinking + web search, `pause_turn`
+   resumed), returns a `Series` or None. Imports `anthropic` lazily; no key/SDK →
+   warns once, returns None.
+2. ✅ **Honesty gate = the facts discipline, applied to the web:** the cited
+   `source_url` host must be on `research.domains` (authoritative allowlist)
+   **and** a verbatim `quote` the agent returns must be found in a re-fetch of
+   that source (`agents._grounded`). Either check failing drops the panel — a
+   fabricated series with an invented citation can't survive.
+3. ✅ `news/enrichers/research.py` (`research:series`) formats the stashed,
+   already-verified `Series` — same annotated line as `series:`. Registered in
+   `REGISTRY` + `KNOWN_ENRICHERS`; offered via `story_offers(research_label=…)`.
+4. ✅ Gated in `enrich()` by `agents._wants_research`: only when enabled, **no
+   configured series matched**, lead/breaking, non-sports, within
+   `research.max_per_run`. Provenance caption mandatory (from the `Series`).
+5. ✅ Config `research:` block (**`enabled: false`** default, model, budget,
+   min-importance, domain allowlist); `anthropic` added to `requirements.txt`
+   (lazy — pipeline runs without it); `ANTHROPIC_API_KEY` documented in `.env`.
+
+**Verified:** the gate logic offline (allowlist accept/reject, tolerant JSON
+parse, point coercion, disabled→None, quote-grounding accept/reject) and the
+render path (research `SourceData` == the P2 series shape already proven live).
+The billable Claude call itself is exercised only when the user enables it — by
+design; the honesty-critical code is what's tested.
 
 ## Cross-cutting
 

@@ -241,7 +241,8 @@ _PLANNER_SYS = (
 
 def story_offers(story: dict, arts: list[Article], story_tickers: dict[str, str],
                  has_image: bool, n_facts: int = 0,
-                 series_specs: list[dict] | None = None) -> list[tuple[str, str]]:
+                 series_specs: list[dict] | None = None,
+                 research_label: str = "") -> list[tuple[str, str]]:
     """The real menu for one story: (data key, human description) for every panel
     whose data we can actually produce right now. Computed in code — never by the
     model — so the planner can only pick things that will really render."""
@@ -291,6 +292,14 @@ def story_offers(story: dict, arts: list[Article], story_tickers: dict[str, str]
         offers.append((key,
                        f"type=chart — {spec.get('name', sid)}: the real multi-year "
                        f"trend from {prov.upper()} ({shape}), to put this story in "
+                       f"context (line)"))
+
+    # Agent-researched series (the long-tail fallback): a real dataset found and
+    # source-verified for this story when no configured series matched.
+    if research_label:
+        offers.append(("research:series",
+                       f"type=chart — {research_label}: a data series researched "
+                       f"from an authoritative public source to put this story in "
                        f"context (line)"))
     return offers
 
@@ -735,6 +744,22 @@ def _central_series(headline: str, arts: list[Article], config: dict) -> list[di
     return out
 
 
+def _wants_research(story: dict, has_series: bool, config: dict, spent: int) -> bool:
+    """Whether to spend a research call on this story. Gated hard: only when the
+    agent is enabled, no configured series already matched, the story is a
+    lead/breaking item, the domain isn't excluded, and the per-run budget holds —
+    each call is a real, billable Claude web-search request."""
+    rc = config.get("research", {})
+    if not rc.get("enabled") or has_series:
+        return False
+    if str(story.get("domain", "")).lower() in SERIES_SKIP_DOMAINS:
+        return False
+    if spent >= int(rc.get("max_per_run", 2)):
+        return False
+    return (bool(story.get("breaking"))
+            or int(story.get("importance") or 0) >= int(rc.get("min_importance", 4)))
+
+
 def _wants_stock(story: dict, config: dict) -> bool:
     """Stocks are for news that MOVES a stock, not a daily ticker readout. A
     company's chart shows up when the story broke today or is a lead item —
@@ -768,6 +793,7 @@ def enrich(articles: list[Article], config: dict, run_day: date | None = None) -
     membership = assign_articles(stories, candidates)
 
     plan = DayPlan(day=run_day or date.today())
+    research_spent = 0                        # per-run budget for the research agent
     for si, st in enumerate(stories):
         arts = membership.get(si, [])[:12]
         if not arts:
@@ -791,8 +817,23 @@ def enrich(articles: list[Article], config: dict, run_day: date | None = None) -
                    if _wants_stock(st, config) else {})
         series_specs = ([] if str(st.get("domain", "")).lower() in SERIES_SKIP_DOMAINS
                         else _central_series(st.get("headline", ""), arts, config))
+
+        # Long-tail fallback: when no configured series matched, let the research
+        # agent (Claude + web search) look for a real, source-verified series.
+        # Off by default and budget-gated; returns None unless it clears the
+        # authoritative-domain + quote-grounding honesty gate (providers.research).
+        research_series = None
+        if _wants_research(st, bool(series_specs), config, research_spent):
+            from .providers import research as _research_provider
+            with timed("research"):
+                research_series = _research_provider.research_series(
+                    st, _bodies_text(arts[:2]), config)
+            if research_series is not None:
+                research_spent += 1
+
         has_image = any(getattr(a, "image_url", "") for a in arts)
-        offers = story_offers(st, arts, tickers, has_image, len(facts), series_specs)
+        offers = story_offers(st, arts, tickers, has_image, len(facts), series_specs,
+                              research_label=(research_series.label if research_series else ""))
 
         with timed("planner"):
             panels = plan_story(ollama, models.get("planner", "gpt-oss:latest"), st, arts,
@@ -819,5 +860,6 @@ def enrich(articles: list[Article], config: dict, run_day: date | None = None) -
             # coverage/facts enrichers and hero_image() read them straight off it.
             spec._articles = arts     # type: ignore[attr-defined]
             spec._facts = facts       # type: ignore[attr-defined]
+            spec._research = research_series  # type: ignore[attr-defined]
             plan.stories.append(spec)
     return plan

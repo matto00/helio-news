@@ -108,6 +108,31 @@ series:
   - { name: "Gold",                keywords: ["gold price", "price of gold", "gold futures"],   provider: yahoo, id: "GC=F",   fidelity: monthly }
   - { name: "Bitcoin",             keywords: ["bitcoin price", "btc price"],               provider: yahoo, id: "BTC-USD", fidelity: monthly }
 
+# Research agent (the long-tail fallback for `series:`). When a story is clearly
+# about a trackable quantity but NO configured series above matched, an agent
+# (Claude + web search) can look for a real public dataset for it. It is held to
+# the same honesty bar as the fact panel: the cited source must be on `domains`
+# (authoritative publishers only) AND a verbatim quote the agent returns must be
+# found in a re-fetch of that source, or the panel is dropped.
+#
+# OFF by default — each call is a real, billable Claude request with web search.
+# To enable: `pip install anthropic`, put ANTHROPIC_API_KEY in .env (gitignored),
+# and set enabled: true. Gated to lead/breaking stories and a per-run budget.
+research:
+  enabled: false
+  model: "claude-opus-4-8"    # any web-search-capable model; opus is the default
+  max_per_run: 2              # at most N research calls per run (budget)
+  min_importance: 4           # only strong stories (or breaking) qualify
+  domains:                    # authoritative source allowlist (host substring match)
+    - ".gov"
+    - "europa.eu"
+    - "worldbank.org"
+    - "oecd.org"
+    - "who.int"
+    - "imf.org"
+    - "ourworldindata.org"
+    - "fred.stlouisfed.org"
+
 # The helio MCP server this project drives (Python spawns it over stdio; the PAT
 # lives in the server's own env, never here). Override via env HELIO_MCP_CMD /
 # HELIO_PAT / HELIO_API_BASE_URL if your paths differ.

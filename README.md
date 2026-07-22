@@ -89,6 +89,7 @@ invented by a model.
 | `stock:TICKER:trend` | yfinance | day/week/month % change, as a bar |
 | `stock:TICKER` (metric) | yfinance | latest price + day change |
 | `series:<provider>:<id>[:monthly]` | a **real public dataset** (FRED / Yahoo) for a quantity the story is about — put on a trend line, captioned with its source; `:monthly` aggregates a dense daily series to a monthly average *in a helio pipeline* | a configured series (`series:` in config) is central to the story |
+| `research:series` | a data series **an agent (Claude + web search) found** for the story from an authoritative public source — held to the fact panel's honesty bar (allowlisted domain + a verbatim quote re-verified against the source) | `research.enabled` + a lead/breaking story with no configured `series:` match, within the per-run budget |
 | `coverage:sources` | the story's own articles | ≥3 outlets covering it |
 | `coverage:timeline` | article timestamps | ≥3 distinct hours — shows a story breaking |
 | briefing pie/bar/metrics | the day's fetch stats | always (the "at a glance" strip) |
@@ -109,6 +110,10 @@ HELIO_API_BASE_URL=https://helio-backend-...run.app
 # `series:` enricher. Free key from https://fred.stlouisfed.org/docs/api/api_key.html
 # Yahoo-backed series (oil, gold, bitcoin) work without any key.
 FRED_API_KEY=...
+# optional: enables the research agent (long-tail data series via Claude + web
+# search). Only used when `research.enabled: true` in config; needs `anthropic`
+# installed. Off by default.
+ANTHROPIC_API_KEY=sk-ant-...
 EOF
 
 # ollama must be serving the models named in config/outlets.yaml:
