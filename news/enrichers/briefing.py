@@ -55,3 +55,45 @@ def source_volume(plan, articles):
         # Outlet names are long — a horizontal bar reads them without rotating.
         chart_options={"orientation": "horizontal"},
     )
+
+
+def recap(plan, config):
+    """The past week's top stories, independent of today's news — a
+    deterministic aggregation, no model call. A multi-day continuation chain
+    (news.history.group_entries) counts once, at its peak importance, so a
+    story that led for four straight days doesn't crowd out the rest of the
+    week. Overview-board only."""
+    from . import SourceData, T_INT, T_STR
+    from .. import history as _history
+
+    hist_cfg = config.get("history", {})
+    recap_cfg = hist_cfg.get("recap", {})
+    lookback = int(recap_cfg.get("lookback_days", 7))
+    max_stories = int(recap_cfg.get("max_stories", 6))
+    threshold = float(hist_cfg.get("match_threshold", 0.35))
+
+    window = _history.load_window(plan.day, lookback)
+    today_entries = [_history.HistoryEntry.from_story(s, plan.day.isoformat())
+                     for s in plan.stories]
+    all_entries = window + today_entries
+    if not all_entries:
+        return None
+
+    groups = _history.group_entries(all_entries, threshold)
+    peaks = [max(g, key=lambda e: e.importance) for g in groups]
+    peaks.sort(key=lambda e: e.importance, reverse=True)
+    top = peaks[:max_stories]
+    if not top:
+        return None
+
+    return SourceData(
+        key="briefing-recap",
+        columns=[{"name": "date", "type": T_STR},
+                 {"name": "headline", "type": T_STR},
+                 {"name": "importance", "type": T_INT}],
+        rows=[[e.day, e.headline, e.importance] for e in top],
+        mapping={"columns": "date,headline,importance"},
+        panel_type="table",
+        density="condensed",
+        column_order=["date", "headline", "importance"],
+    )
