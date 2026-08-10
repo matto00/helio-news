@@ -13,3 +13,6 @@ mcp>=1.2.0              # MCP client (spawns the helio MCP server over stdio)
 # Optional — only needed when the research agent is enabled (research.enabled in
 # config). Imported lazily; the pipeline runs without it when research is off.
 anthropic>=0.116.0      # research enricher: Claude + web search for long-tail series
+
+# Dev/testing only — not required to run the daily pipeline.
+pytest>=8.0.0
