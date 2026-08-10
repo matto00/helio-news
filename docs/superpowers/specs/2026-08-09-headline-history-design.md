@@ -165,11 +165,18 @@ story._continuity = {
 
 ## Pipeline placement
 
-`triage → extract → critic → planner → summarizer → **historian/verifier
-(new)** → sentiment → curator → layout`
+`triage → extract → critic → **historian/verifier (new)** → planner →
+summarizer → sentiment → curator → layout`
 
-Placed after `summarizer` (needs the final headline/subject) and before
-`sentiment`/`curator` (curator needs `days_running`).
+Placed right alongside `extract`/`_central_tickers`/`_central_series` —
+after triage's raw headline exists, before `story_offers`/`plan_story` build
+the planner's menu (the menu needs `len(occurrences)` to offer
+`history:timeline` accurately, the same reason facts/tickers/series are
+fully resolved before the offer is built). It runs on the **raw triage
+headline**, not the summarizer's polished one — the continuity note is a
+short independent blurb, not a rewrite of the summary, so this doesn't
+affect its quality. `days_running`/`trend` reach the curator later via
+`stories_brief`, same as before.
 
 ## Config
 
