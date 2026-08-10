@@ -431,11 +431,18 @@ def main(argv: list[str] | None = None) -> int:
 
     # Persist today's headlines for tomorrow's continuity matching — only on a
     # real run, never --plan-only (a dev loop re-running the same morning must
-    # not fabricate multiple "days" of history).
+    # not fabricate multiple "days" of history). Non-fatal: history is the
+    # least important output here — a disk error writing it must never abort
+    # the actual dashboard build (write-before-push is still intentional, so
+    # an MCP failure doesn't lose the day's record; only the write itself is
+    # made fail-soft).
     hist_cfg = config.get("history", {})
-    history_write_day(plan.day, [HistoryEntry.from_story(s, plan.day.isoformat())
-                                 for s in plan.stories],
-                      int(hist_cfg.get("retention_days", 60)))
+    try:
+        history_write_day(plan.day, [HistoryEntry.from_story(s, plan.day.isoformat())
+                                     for s in plan.stories],
+                          int(hist_cfg.get("retention_days", 60)))
+    except Exception as e:
+        print(f"· history write failed (non-fatal): {e}", file=sys.stderr)
 
     asyncio.run(apply_plan(plan, articles, config, curation, cleanup=not args.keep))
     print(timings_report(), file=sys.stderr)

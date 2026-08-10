@@ -67,3 +67,21 @@ def test_real_run_writes_history_before_apply_plan():
     called_day, called_entries, _retention = write_mock.call_args[0]
     assert called_day == date(2026, 8, 9)
     assert called_entries[0].slug == "s"
+
+
+# ── history write failure must never abort the dashboard build ──────────────
+
+def test_history_write_failure_is_non_fatal():
+    fake_story = SimpleNamespace(slug="s", headline="h", subject="", domain="general",
+                                 importance=3, breaking=False, sentiment="neutral",
+                                 summary="", _articles=[])
+    from datetime import date
+    fake_plan = SimpleNamespace(day=date(2026, 8, 9), stories=[fake_story])
+    with patch.object(run, "build_plan", return_value=(fake_plan, [], {})), \
+         patch.object(run, "history_write_day", side_effect=OSError("disk full")), \
+         patch.object(run, "apply_plan", new=lambda *a, **kw: None), \
+         patch("asyncio.run") as asyncio_mock, \
+         patch.object(run, "load_config", return_value={}):
+        result = run.main([])
+    assert result == 0
+    asyncio_mock.assert_called_once()

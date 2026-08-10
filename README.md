@@ -95,6 +95,7 @@ invented by a model.
 | `history:timeline` | this story's own multi-day record, historian-judged + verifier-audited | ≥3 verified past occurrences of the same ongoing story |
 | `coverage:sources` | the story's own articles | ≥3 outlets covering it |
 | `coverage:timeline` | article timestamps | ≥3 distinct hours — shows a story breaking |
+| "This week" (weekly recap) | stored history + today's stories, deterministically aggregated (`news.history.group_entries` collapses a multi-day continuation chain to its peak importance) — no model | always shown, Overview board only |
 | briefing pie/bar/metrics | the day's fetch stats | always (the "at a glance" strip) |
 
 Stocks are gated to breaking news (`stocks.breaking_only` in the config) — a

@@ -132,6 +132,30 @@ def test_find_candidates_sorted_most_recent_day_first():
     assert [c.entry.slug for c in candidates] == ["fed-b", "fed-a"]
 
 
+def test_find_candidates_caps_at_max_candidates_most_recent_first():
+    window = [
+        history.HistoryEntry(
+            slug=f"fed-{i}", headline="Fed weighs a rate cut", subject="",
+            domain="markets", importance=3, breaking=False, sentiment="neutral",
+            summary="", article_count=1, entities=[], day=f"2026-08-{i:02d}")
+        for i in range(1, 11)   # 10 matching candidates, days 01..10
+    ]
+    candidates = history.find_candidates(
+        "Fed cuts rates", "", [], window, threshold=0.2)
+    assert len(candidates) == history.MAX_CANDIDATES == 8
+    assert [c.entry.day for c in candidates] == \
+        [f"2026-08-{i:02d}" for i in range(10, 2, -1)]   # 8 most recent, newest first
+
+
+def test_find_candidates_tolerates_none_entities():
+    window = [history.HistoryEntry(
+        slug="x", headline="Fed cuts rates", subject="", domain="markets",
+        importance=3, breaking=False, sentiment="neutral", summary="",
+        article_count=1, entities=[], day="2026-08-06")]
+    candidates = history.find_candidates("Fed cuts rates", "", None, window, threshold=0.2)
+    assert [c.entry.slug for c in candidates] == ["x"]
+
+
 def test_entities_from_articles_dedupes_preserving_order():
     class FakeArticle:
         def __init__(self, matched):

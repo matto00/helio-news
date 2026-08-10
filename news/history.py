@@ -19,6 +19,12 @@ from pathlib import Path
 
 HISTORY_DIR = Path(__file__).resolve().parent.parent / "state" / "history"
 
+# Caps find_candidates()'s result — bounds the historian/verifier prompt size
+# and the rendered history:timeline panel, and stands in for "weighted toward
+# recency" (the design's phrase): find_candidates already sorts newest-first,
+# so capping that sort's output is a cheap, effective recency weighting.
+MAX_CANDIDATES = 8
+
 _STOPWORDS = frozenset((
     "the a an and or of to in on for with at by from as is are was were be "
     "been being this that these those it its his her their our your my i he "
@@ -170,7 +176,7 @@ def find_candidates(headline: str, subject: str, entities: list[str],
     today = HistoryEntry(
         slug="", headline=headline, subject=subject, domain="", importance=0,
         breaking=False, sentiment="neutral", summary="", article_count=0,
-        entities=entities,
+        entities=entities or [],
     )
     today_tokens = today.tokens()
     if not today_tokens:
@@ -181,7 +187,7 @@ def find_candidates(headline: str, subject: str, entities: list[str],
         if score >= threshold:
             out.append(Candidate(entry=past, score=score))
     out.sort(key=lambda c: (c.entry.day, c.score), reverse=True)
-    return out
+    return out[:MAX_CANDIDATES]
 
 
 def ground_truth(today_importance: int, candidates: list[Candidate]) -> dict:

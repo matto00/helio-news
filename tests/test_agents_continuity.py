@@ -32,6 +32,23 @@ def _window(day="2026-08-08", importance=3):
     return [entry]
 
 
+def _window_same_day(importances=(2, 5)):
+    """Two stored entries on the SAME day, different importance — a day's
+    triage occasionally splits one real event into two slugs (fix 2)."""
+    return [
+        history.HistoryEntry(
+            slug=f"fed-{i}", headline="Fed signals a rate cut", subject="",
+            domain="markets", importance=imp, breaking=False,
+            sentiment="neutral", summary="", article_count=1,
+            entities=["Federal Reserve"], day="2026-08-08")
+        for i, imp in enumerate(importances)
+    ]
+
+
+def _ground():
+    return {"days_running": 2, "first_seen": "2026-08-08", "expected_trend": "rising"}
+
+
 # ── historian_pass ───────────────────────────────────────────────────────────
 
 def test_historian_pass_short_circuits_with_no_candidates():
@@ -61,7 +78,7 @@ def test_verify_continuation_true_when_model_confirms():
     ollama = FakeOllama([{"confirmed": True}])
     result = agents.verify_continuation(
         ollama, "gpt-oss:latest", _story(), _candidate_dicts(),
-        {"is_continuation": True, "trend": "rising", "note": "x"})
+        {"is_continuation": True, "trend": "rising", "note": "x"}, _ground())
     assert result is True
 
 
@@ -69,7 +86,7 @@ def test_verify_continuation_false_when_model_rejects():
     ollama = FakeOllama([{"confirmed": False}])
     result = agents.verify_continuation(
         ollama, "gpt-oss:latest", _story(), _candidate_dicts(),
-        {"is_continuation": True, "trend": "rising", "note": "x"})
+        {"is_continuation": True, "trend": "rising", "note": "x"}, _ground())
     assert result is False
 
 
@@ -77,9 +94,22 @@ def test_verify_continuation_short_circuits_when_historian_said_no():
     ollama = FakeOllama([])
     result = agents.verify_continuation(
         ollama, "gpt-oss:latest", _story(), _candidate_dicts(),
-        {"is_continuation": False, "trend": "steady", "note": ""})
+        {"is_continuation": False, "trend": "steady", "note": ""}, _ground())
     assert result is False
     assert ollama.calls == []
+
+
+def test_verify_continuation_includes_ground_truth_in_prompt():
+    """Proves the wiring: ground-truth facts actually reach the model prompt,
+    so a claimed timeframe that contradicts them can be caught (fix 1)."""
+    ollama = FakeOllama([{"confirmed": True}])
+    ground = {"days_running": 4, "first_seen": "2026-08-05", "expected_trend": "rising"}
+    agents.verify_continuation(
+        ollama, "gpt-oss:latest", _story(), _candidate_dicts(),
+        {"is_continuation": True, "trend": "rising", "note": "Fourth day."}, ground)
+    user = ollama.calls[-1]["user"]
+    assert "4" in user
+    assert "2026-08-05" in user
 
 
 # ── continuity_facts orchestrator ────────────────────────────────────────────
@@ -140,6 +170,24 @@ def test_continuity_facts_confirmed_returns_full_dict():
         "occurrences": [{"day": "2026-08-08", "headline": "Fed signals a rate cut",
                          "importance": 3}],
     }
+
+
+def test_continuity_facts_dedupes_same_day_candidates_keeping_highest_importance():
+    # Two stored entries both land on 2026-08-08 (importance 2 and 5) — a day's
+    # triage occasionally splits one real event into two slugs. Only the
+    # higher-importance one (5) should survive, so days_running (2) and
+    # len(occurrences) (1) stay consistent by construction.
+    ollama = FakeOllama([
+        {"is_continuation": True, "trend": "falling", "note": "Cooling off."},
+        {"confirmed": True},
+    ])
+    result = agents.continuity_facts(
+        ollama, "gpt-oss:latest", "gpt-oss:latest", _story(),
+        ["Federal Reserve"], _window_same_day(), match_threshold=0.2)
+    assert result is not None
+    assert len(result["occurrences"]) == 1
+    assert result["occurrences"][0]["importance"] == 5
+    assert result["days_running"] == 2
 
 
 def test_story_offers_includes_history_timeline_at_three_occurrences():

@@ -61,6 +61,7 @@ def timings_report() -> str:
     lines.append(f"·   {'TOTAL':11} {'':3}         {total:7.1f}s")
     return "\n".join(lines)
 
+from . import history as _history
 from .enrichers import coverage as _coverage
 from .enrichers import history as _history_enricher
 from .fetch import Article, hydrate_bodies
@@ -601,19 +602,26 @@ _VERIFY_CONTINUATION_SYS = (
     "You are a skeptical editor double-checking a colleague's claim that TODAY's "
     "story is a continuation of specific past stories. You are given today's "
     "story, the past stories claimed as the same ongoing event, and the "
-    "colleague's one-sentence note. Reject (confirmed=false) UNLESS the past "
-    "stories are clearly about the SAME event or situation as today's, not just "
-    "the same general topic — when genuinely uncertain, reject. Also reject if "
-    "the note asserts anything not supported by the listed stories. Return ONLY "
-    'JSON {"confirmed"}.'
+    "colleague's one-sentence note. You are also given the REAL day-count and "
+    "first-seen date, computed independently — reject if the note's claimed "
+    "timeframe (e.g. 'third day', 'since Tuesday') contradicts these real "
+    "numbers. Reject (confirmed=false) UNLESS the past stories are clearly "
+    "about the SAME event or situation as today's, not just the same general "
+    "topic — when genuinely uncertain, reject. Also reject if the note asserts "
+    "anything not supported by the listed stories. Return ONLY JSON "
+    '{"confirmed"}.'
 )
 
 
 def verify_continuation(ollama: Ollama, model: str, story: dict, candidates: list[dict],
-                        historian_out: dict, think: str | None = None) -> bool:
+                        historian_out: dict, ground: dict, think: str | None = None) -> bool:
     """Adversarial audit of the historian's is_continuation claim — same
-    relevance-judge role critic_numbers plays for extracted figures. Never
-    called (no ollama spend) when the historian already said no."""
+    relevance-judge role critic_numbers plays for extracted figures. Also
+    hands the model the REAL, code-computed day-count/first-seen (`ground`,
+    from news.history.ground_truth) and instructs it to reject a note whose
+    claimed timeframe contradicts them — a note claiming "Fourth consecutive
+    day" when the real days_running is 2 is caught here, not just eyeballed.
+    Never called (no ollama spend) when the historian already said no."""
     if not candidates or not historian_out.get("is_continuation"):
         return False
     listed = "\n".join(
@@ -623,11 +631,29 @@ def verify_continuation(ollama: Ollama, model: str, story: dict, candidates: lis
     user = (
         f"Today's story: {story.get('headline')}\n\n"
         f"Claimed past occurrences:\n{listed}\n\n"
-        f"Colleague's note: \"{historian_out.get('note', '')}\""
+        f"Colleague's note: \"{historian_out.get('note', '')}\"\n\n"
+        f"REAL facts, computed independently in code — the note must not "
+        f"contradict these:\n"
+        f"- days_running: {ground.get('days_running')}\n"
+        f"- first_seen: {ground.get('first_seen')}"
     )
     out = ollama.chat_json(model, _VERIFY_CONTINUATION_SYS, user,
                            temperature=0.1, think=think)
     return bool(out.get("confirmed"))
+
+
+def _dedup_candidates_by_day(candidates: list) -> list:
+    """One candidate per distinct day — a day's triage occasionally splits one
+    real event into two stored slugs, which would otherwise make days_running
+    (distinct days) disagree with len(candidates) (raw rows). Keeps the
+    highest-importance candidate per day; ties keep whichever is encountered
+    first (order doesn't matter — importance drives the choice)."""
+    by_day: dict[str, object] = {}
+    for c in candidates:
+        existing = by_day.get(c.entry.day)
+        if existing is None or c.entry.importance > existing.entry.importance:
+            by_day[c.entry.day] = c
+    return list(by_day.values())
 
 
 def continuity_facts(ollama: Ollama, model_historian: str, model_verifier: str,
@@ -641,13 +667,18 @@ def continuity_facts(ollama: Ollama, model_historian: str, model_verifier: str,
     verifier call; the verifier then adversarially audits is_continuation.
     Any failure at any step → None, so the story just renders with no
     continuity data — same fail-soft posture every enricher already has."""
-    from . import history as _history
-
     candidates = _history.find_candidates(
         story.get("headline", ""), story.get("subject", ""), entities,
         window, match_threshold)
     if not candidates:
         return None
+
+    # A day's triage occasionally splits one real event into two stored slugs.
+    # Dedupe to one candidate per distinct day (highest importance wins) BEFORE
+    # anything downstream reads day-counts, so ground["days_running"],
+    # len(candidate_dicts), the offer text, and the rendered timeline can never
+    # disagree — len(occurrences) + 1 == days_running by construction.
+    candidates = _dedup_candidates_by_day(candidates)
 
     candidate_dicts = [{"day": c.entry.day, "headline": c.entry.headline,
                         "importance": c.entry.importance} for c in candidates]
@@ -664,7 +695,7 @@ def continuity_facts(ollama: Ollama, model_historian: str, model_verifier: str,
 
     with timed("verifier"):
         confirmed = verify_continuation(ollama, model_verifier, story,
-                                        candidate_dicts, h_out, think_verifier)
+                                        candidate_dicts, h_out, ground, think_verifier)
     if not confirmed:
         return None
 
@@ -749,8 +780,12 @@ _CURATOR_SYS = (
 def curate(ollama: Ollama, model: str, stories_brief: list[dict],
            boards: list[str], overview_size: int, think: str | None = None) -> dict:
     """Editor-in-chief pass. `stories_brief` is [{slug,board,headline,subject,
-    importance,breaking,summary}]. Returns {"overview":[slug,...],
-    "briefs":{board: sentence}} — callers must tolerate missing keys."""
+    importance,breaking,summary,days_running,trend}] — days_running/trend are
+    the code-computed continuity fatigue signal (news.run._continuity_brief_fields,
+    itself sourced from news.history.ground_truth) the prompt reads to weigh a
+    fresh lead against a stale, non-escalating rehash. Returns
+    {"overview":[slug,...], "briefs":{board: sentence}} — callers must
+    tolerate missing keys."""
     if not stories_brief:
         return {"overview": [], "briefs": {}}
     lines = []
@@ -946,7 +981,6 @@ def enrich(articles: list[Article], config: dict, run_day: date | None = None) -
     plan = DayPlan(day=run_day or date.today())
     research_spent = 0                        # per-run budget for the research agent
     hist_cfg = config.get("history", {})
-    from . import history as _history
     history_window = _history.load_window(plan.day, int(hist_cfg.get("retention_days", 60)))
     for si, st in enumerate(stories):
         arts = membership.get(si, [])[:12]
@@ -973,6 +1007,14 @@ def enrich(articles: list[Article], config: dict, run_day: date | None = None) -
                         else _central_series(st.get("headline", ""), arts, config))
 
         entities = _history.entities_from_articles(arts)
+        # `st` is the raw triage dict — it has no "subject" key yet (the
+        # summarizer, which fills that in, hasn't run at this point in the
+        # sequence), so story.get("subject", "") below is always "" and
+        # matching runs on headline+entities only, not headline+subject+
+        # entities like the stored side. Intentional given the pass ordering
+        # established by Task 7 (changing it risks group_entries' symmetry
+        # for the weekly recap); the practical exposure is bounded by
+        # history.MAX_CANDIDATES.
         continuity = continuity_facts(
             ollama, models.get("historian", "gpt-oss:latest"),
             models.get("verifier", "gpt-oss:latest"), st, entities, history_window,

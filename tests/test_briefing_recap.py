@@ -84,3 +84,20 @@ def test_recap_caps_at_max_stories_by_peak_importance():
     sd = briefing.recap(plan, _config(max_stories=3))
     assert len(sd.rows) == 3
     assert [r[2] for r in sd.rows] == [7, 6, 5]   # highest peak importance first
+
+
+def test_recap_returns_none_on_malformed_stored_importance():
+    # A hand-edited or externally corrupted history file with a non-numeric
+    # importance (e.g. `"importance": "4"`) must not crash the whole overview
+    # board — recap() should fail soft and return None, not raise, when the
+    # bad type blows up a later sort/max comparison.
+    history.write_day(
+        date(2026, 8, 7),
+        [history.HistoryEntry(slug="corrupt", headline="Quarterly earnings beat expectations",
+                              subject="", domain="markets", importance="oops",
+                              breaking=False, sentiment="neutral", summary="",
+                              article_count=1, entities=[])],
+        retention_days=60)
+    plan = _plan(date(2026, 8, 9),
+                [_story("today", "Wildfire spreads across the valley", 3)])
+    assert briefing.recap(plan, _config()) is None

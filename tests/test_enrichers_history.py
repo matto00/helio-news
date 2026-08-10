@@ -18,16 +18,20 @@ def test_build_returns_none_below_min_occurrences():
 
 
 def test_build_returns_table_when_confirmed():
+    # Fed newest-first, matching what continuity_facts()/find_candidates()
+    # actually produce — proves build() does the oldest-first sort itself
+    # rather than merely preserving an already-sorted input.
     continuity = {"occurrences": [
-        {"day": "2026-08-06", "headline": "Fed weighs a rate cut", "importance": 2},
-        {"day": "2026-08-07", "headline": "Fed signals a rate cut", "importance": 3},
         {"day": "2026-08-08", "headline": "Fed set to cut rates", "importance": 3},
+        {"day": "2026-08-07", "headline": "Fed signals a rate cut", "importance": 3},
+        {"day": "2026-08-06", "headline": "Fed weighs a rate cut", "importance": 2},
     ]}
     sd = history_enricher.build("timeline", None, _story(continuity=continuity))
     assert sd is not None
     assert sd.panel_type == "table"
     assert sd.key == "history-fed-rate-cut-timeline"
     assert len(sd.rows) == 3
+    assert [r[0] for r in sd.rows] == ["2026-08-06", "2026-08-07", "2026-08-08"]
     assert sd.rows[0] == ["2026-08-06", "Fed weighs a rate cut", 2]
     assert sd.column_order == ["date", "headline", "importance"]
 

@@ -7,7 +7,7 @@ model or network I/O. A story needs at least MIN_OCCURRENCES verified past
 appearances before the timeline is worth a panel (mirrors coverage.py's
 "≥3 distinct hours" gate for its own timeline).
 
-  history:timeline   the story's past occurrences, oldest matched first   → table
+  history:timeline   the story's past occurrences, sorted oldest → newest   → table
 """
 
 from __future__ import annotations
@@ -25,6 +25,10 @@ def build(arg, panel, story):
     if len(occurrences) < MIN_OCCURRENCES:
         return None
 
+    # continuity_facts()/find_candidates() hand these back newest-first; a
+    # "timeline" reads naturally oldest → newest, so sort here rather than
+    # trust the input order.
+    occurrences = sorted(occurrences, key=lambda o: o["day"])
     rows = [[o["day"], o["headline"], o["importance"]] for o in occurrences]
     return SourceData(
         key=f"history-{story.slug}-timeline",
