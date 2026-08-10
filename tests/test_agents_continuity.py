@@ -140,3 +140,23 @@ def test_continuity_facts_confirmed_returns_full_dict():
         "occurrences": [{"day": "2026-08-08", "headline": "Fed signals a rate cut",
                          "importance": 3}],
     }
+
+
+def test_story_offers_includes_history_timeline_at_three_occurrences():
+    offers = agents.story_offers({}, [], {}, has_image=False, n_facts=0,
+                                 history_occurrences=3)
+    keys = {k for k, _ in offers}
+    assert "history:timeline" in keys
+
+
+def test_story_offers_omits_history_timeline_below_three():
+    offers = agents.story_offers({}, [], {}, has_image=False, n_facts=0,
+                                 history_occurrences=2)
+    keys = {k for k, _ in offers}
+    assert "history:timeline" not in keys
+
+
+def test_story_offers_defaults_history_occurrences_to_zero():
+    offers = agents.story_offers({}, [], {}, has_image=False, n_facts=0)
+    keys = {k for k, _ in offers}
+    assert "history:timeline" not in keys

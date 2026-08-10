@@ -62,6 +62,7 @@ def timings_report() -> str:
     return "\n".join(lines)
 
 from .enrichers import coverage as _coverage
+from .enrichers import history as _history_enricher
 from .fetch import Article, hydrate_bodies
 from .plan_schema import DayPlan, StorySpec
 
@@ -242,7 +243,8 @@ _PLANNER_SYS = (
 def story_offers(story: dict, arts: list[Article], story_tickers: dict[str, str],
                  has_image: bool, n_facts: int = 0,
                  series_specs: list[dict] | None = None,
-                 research_label: str = "") -> list[tuple[str, str]]:
+                 research_label: str = "",
+                 history_occurrences: int = 0) -> list[tuple[str, str]]:
     """The real menu for one story: (data key, human description) for every panel
     whose data we can actually produce right now. Computed in code — never by the
     model — so the planner can only pick things that will really render."""
@@ -257,6 +259,11 @@ def story_offers(story: dict, arts: list[Article], story_tickers: dict[str, str]
                        f"type=table — the {n_facts} key figures in this story "
                        f"(amounts, counts, %) pulled and fact-checked from the "
                        f"reporting, shown as a grid of stat tiles"))
+
+    if history_occurrences >= _history_enricher.MIN_OCCURRENCES:
+        offers.append(("history:timeline",
+                       f"type=table — this story's last {history_occurrences} days "
+                       f"of coverage, a quick timeline of how it developed"))
 
     for mode in _coverage.available(arts):
         if mode == "sources":
@@ -934,6 +941,9 @@ def enrich(articles: list[Article], config: dict, run_day: date | None = None) -
 
     plan = DayPlan(day=run_day or date.today())
     research_spent = 0                        # per-run budget for the research agent
+    hist_cfg = config.get("history", {})
+    from . import history as _history
+    history_window = _history.load_window(plan.day, int(hist_cfg.get("retention_days", 60)))
     for si, st in enumerate(stories):
         arts = membership.get(si, [])[:12]
         if not arts:
@@ -958,6 +968,14 @@ def enrich(articles: list[Article], config: dict, run_day: date | None = None) -
         series_specs = ([] if str(st.get("domain", "")).lower() in SERIES_SKIP_DOMAINS
                         else _central_series(st.get("headline", ""), arts, config))
 
+        entities = _history.entities_from_articles(arts)
+        continuity = continuity_facts(
+            ollama, models.get("historian", "gpt-oss:latest"),
+            models.get("verifier", "gpt-oss:latest"), st, entities, history_window,
+            float(hist_cfg.get("match_threshold", 0.35)),
+            effort.get("historian"), effort.get("verifier"),
+        )
+
         # Long-tail fallback: when no configured series matched, let the research
         # agent (Claude + web search) look for a real, source-verified series.
         # Off by default and budget-gated; returns None unless it clears the
@@ -973,7 +991,8 @@ def enrich(articles: list[Article], config: dict, run_day: date | None = None) -
 
         has_image = any(getattr(a, "image_url", "") for a in arts)
         offers = story_offers(st, arts, tickers, has_image, len(facts), series_specs,
-                              research_label=(research_series.label if research_series else ""))
+                              research_label=(research_series.label if research_series else ""),
+                              history_occurrences=len(continuity["occurrences"]) if continuity else 0)
 
         with timed("planner"):
             panels = plan_story(ollama, models.get("planner", "gpt-oss:latest"), st, arts,
@@ -1001,5 +1020,6 @@ def enrich(articles: list[Article], config: dict, run_day: date | None = None) -
             spec._articles = arts     # type: ignore[attr-defined]
             spec._facts = facts       # type: ignore[attr-defined]
             spec._research = research_series  # type: ignore[attr-defined]
+            spec._continuity = continuity      # type: ignore[attr-defined]
             plan.stories.append(spec)
     return plan
