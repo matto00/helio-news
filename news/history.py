@@ -209,3 +209,36 @@ def trend_matches(claimed_trend: str, ground: dict) -> bool:
     check (the other half, is_continuation, needs the adversarial model
     pass since it's a judgement call, not arithmetic)."""
     return claimed_trend == ground.get("expected_trend")
+
+
+def group_entries(entries: list[HistoryEntry], threshold: float) -> list[list[HistoryEntry]]:
+    """Greedy connected-components clustering by token/entity overlap —
+    collapses a multi-day continuation chain into one group so a recap
+    counts it once, at its peak importance. Pairwise, O(n^2), fine at the
+    scale this runs at (a handful of stories/day over a ~7-day window)."""
+    n = len(entries)
+    if n == 0:
+        return []
+    token_sets = [e.tokens() for e in entries]
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[ri] = rj
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _overlap_score(token_sets[i], token_sets[j]) >= threshold:
+                union(i, j)
+
+    groups: dict[int, list[HistoryEntry]] = {}
+    for i, e in enumerate(entries):
+        groups.setdefault(find(i), []).append(e)
+    return list(groups.values())

@@ -196,3 +196,43 @@ def test_trend_matches():
     assert history.trend_matches("rising", ground) is True
     assert history.trend_matches("falling", ground) is False
     assert history.trend_matches("steady", ground) is False
+
+
+def test_group_entries_clusters_a_multi_day_arc():
+    entries = [
+        history.HistoryEntry(slug="a", headline="Fed weighs a rate cut", subject="",
+                             domain="markets", importance=2, breaking=False,
+                             sentiment="neutral", summary="", article_count=1,
+                             entities=["Federal Reserve"], day="2026-08-05"),
+        history.HistoryEntry(slug="b", headline="Fed signals a rate cut", subject="",
+                             domain="markets", importance=3, breaking=False,
+                             sentiment="neutral", summary="", article_count=1,
+                             entities=["Federal Reserve"], day="2026-08-07"),
+        history.HistoryEntry(slug="c", headline="Fed cuts rates a quarter point",
+                             subject="", domain="markets", importance=4,
+                             breaking=False, sentiment="neutral", summary="",
+                             article_count=1, entities=["Federal Reserve"],
+                             day="2026-08-09"),
+    ]
+    groups = history.group_entries(entries, threshold=0.3)
+    assert len(groups) == 1
+    assert {e.slug for e in groups[0]} == {"a", "b", "c"}
+
+
+def test_group_entries_keeps_unrelated_stories_separate():
+    entries = [
+        history.HistoryEntry(slug="fed", headline="Fed cuts rates", subject="",
+                             domain="markets", importance=3, breaking=False,
+                             sentiment="neutral", summary="", article_count=1,
+                             entities=[], day="2026-08-06"),
+        history.HistoryEntry(slug="padres", headline="Padres win the series", subject="",
+                             domain="sports", importance=3, breaking=False,
+                             sentiment="good", summary="", article_count=1,
+                             entities=[], day="2026-08-07"),
+    ]
+    groups = history.group_entries(entries, threshold=0.3)
+    assert len(groups) == 2
+
+
+def test_group_entries_empty_list():
+    assert history.group_entries([], threshold=0.3) == []
