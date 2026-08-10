@@ -146,3 +146,39 @@ def load_window(today: date, lookback_days: int) -> list[HistoryEntry]:
                 except TypeError:
                     continue
     return out
+
+
+@dataclass
+class Candidate:
+    entry: HistoryEntry
+    score: float
+
+
+def _overlap_score(a_tokens: set[str], b_tokens: set[str]) -> float:
+    if not a_tokens or not b_tokens:
+        return 0.0
+    overlap = a_tokens & b_tokens
+    return len(overlap) / min(len(a_tokens), len(b_tokens))
+
+
+def find_candidates(headline: str, subject: str, entities: list[str],
+                    window: list[HistoryEntry], threshold: float) -> list[Candidate]:
+    """Deterministic token/entity overlap against the stored window — the
+    cheap pre-filter that decides whether the historian pass runs at all for
+    a story. No model call. A story with zero candidates costs nothing
+    further downstream."""
+    today = HistoryEntry(
+        slug="", headline=headline, subject=subject, domain="", importance=0,
+        breaking=False, sentiment="neutral", summary="", article_count=0,
+        entities=entities,
+    )
+    today_tokens = today.tokens()
+    if not today_tokens:
+        return []
+    out: list[Candidate] = []
+    for past in window:
+        score = _overlap_score(today_tokens, past.tokens())
+        if score >= threshold:
+            out.append(Candidate(entry=past, score=score))
+    out.sort(key=lambda c: (c.entry.day, c.score), reverse=True)
+    return out

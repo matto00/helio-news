@@ -73,3 +73,76 @@ def test_load_window_skips_invalid_utf8_files(isolated_history_dir):
 def test_load_window_returns_no_files_directory(tmp_path, monkeypatch):
     monkeypatch.setattr(history, "HISTORY_DIR", tmp_path / "does-not-exist")
     assert history.load_window(date(2026, 8, 9), lookback_days=7) == []
+
+
+def test_find_candidates_matches_on_shared_headline_tokens():
+    window = [
+        history.HistoryEntry(
+            slug="fed-considers-cut", headline="Fed considers a quarter-point rate cut",
+            subject="Federal Reserve", domain="markets", importance=3,
+            breaking=False, sentiment="neutral", summary="", article_count=3,
+            entities=["Federal Reserve"], day="2026-08-06",
+        ),
+        history.HistoryEntry(
+            slug="padres-win", headline="Padres win 4-2 over the Giants",
+            subject="Padres", domain="sports", importance=2, breaking=False,
+            sentiment="good", summary="", article_count=2, entities=[],
+            day="2026-08-06",
+        ),
+    ]
+    candidates = history.find_candidates(
+        "Fed cuts rates a quarter point", "Federal Reserve rate policy",
+        ["Federal Reserve"], window, threshold=0.3)
+    assert [c.entry.slug for c in candidates] == ["fed-considers-cut"]
+    assert candidates[0].score > 0
+
+
+def test_find_candidates_respects_threshold():
+    window = [history.HistoryEntry(
+        slug="loose-overlap", headline="A story about the general economy",
+        subject="", domain="business", importance=3, breaking=False,
+        sentiment="neutral", summary="", article_count=1, entities=[],
+        day="2026-08-06",
+    )]
+    candidates = history.find_candidates(
+        "Fed cuts rates a quarter point", "", [], window, threshold=0.9)
+    assert candidates == []
+
+
+def test_find_candidates_empty_window_or_blank_story_returns_empty():
+    assert history.find_candidates("Fed cuts rates", "", [], [], threshold=0.3) == []
+    entry = history.HistoryEntry(
+        slug="x", headline="Fed cuts rates", subject="", domain="markets",
+        importance=3, breaking=False, sentiment="neutral", summary="",
+        article_count=1, entities=[], day="2026-08-06")
+    assert history.find_candidates("", "", [], [entry], threshold=0.3) == []
+
+
+def test_find_candidates_sorted_most_recent_day_first():
+    older = history.HistoryEntry(
+        slug="fed-a", headline="Fed weighs a rate cut", subject="", domain="markets",
+        importance=3, breaking=False, sentiment="neutral", summary="",
+        article_count=1, entities=[], day="2026-08-05")
+    newer = history.HistoryEntry(
+        slug="fed-b", headline="Fed signals a rate cut", subject="", domain="markets",
+        importance=3, breaking=False, sentiment="neutral", summary="",
+        article_count=1, entities=[], day="2026-08-07")
+    candidates = history.find_candidates(
+        "Fed cuts rates", "", [], [older, newer], threshold=0.2)
+    assert [c.entry.slug for c in candidates] == ["fed-b", "fed-a"]
+
+
+def test_entities_from_articles_dedupes_preserving_order():
+    class FakeArticle:
+        def __init__(self, matched):
+            self.matched = matched
+
+    arts = [FakeArticle(["Apple", "Nvidia"]), FakeArticle(["Nvidia", "Amazon"])]
+    assert history.entities_from_articles(arts) == ["Apple", "Nvidia", "Amazon"]
+
+
+def test_entities_from_articles_handles_no_matched_attr():
+    class Bare:
+        pass
+
+    assert history.entities_from_articles([Bare()]) == []
