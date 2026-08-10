@@ -43,6 +43,8 @@ models:
   curator: "gpt-oss:latest"     # picks the front page + writes each board's brief
   extractor: "gpt-oss:latest"   # pulls the story's key figures from article bodies
   critic: "gpt-oss:latest"      # audits each extracted figure against the source text
+  historian: "gpt-oss:latest"   # judges whether a matched past story is really the same one
+  verifier: "gpt-oss:latest"    # adversarially audits the historian's continuation claim
 
 # gpt-oss reasoning effort per pass (low | medium | high). Judgement-heavy passes
 # get high; mechanical/structured ones stay low so the model doesn't overthink a
@@ -57,6 +59,10 @@ reasoning:
   extractor: high           # finding the right figures is the generative call
   critic: high              # also the relevance judge (reject off-topic figures a
                             # same-vocabulary article leaked in) — wants real reasoning
+  historian: medium           # narrower judgement than triage — is THIS candidate really
+                              # the same ongoing story, not just the same keywords
+  verifier: high              # adversarial audit of the historian's claim, same
+                              # skeptical-by-default posture as the numbers critic
 
 # Story sentiment → panel background tint (metrics/charts only; summaries/photos
 # stay neutral). A stock panel overrides this with its own price-movement sign.
@@ -132,6 +138,20 @@ research:
     - "imf.org"
     - "ourworldindata.org"
     - "fred.stlouisfed.org"
+
+# Headline history (day/week/month memory). A `historian` pass judges whether
+# a candidate past story (found by deterministic keyword/entity overlap, no
+# model call) is genuinely the SAME ongoing story as today's; a `verifier`
+# pass adversarially audits that judgement, same relevance-judge role the
+# numbers critic plays for facts. Day counts/trend direction are always
+# code-computed from the stored record, never asserted by a model — see
+# docs/superpowers/specs/2026-08-09-headline-history-design.md.
+history:
+  retention_days: 60          # how long a day's stored headlines stick around
+  match_threshold: 0.35       # token/entity overlap score to become a "candidate"
+  recap:
+    lookback_days: 7          # the weekly recap panel's window
+    max_stories: 6            # top-N continuation-chains shown, by peak importance
 
 # The helio MCP server this project drives (Python spawns it over stdio; the PAT
 # lives in the server's own env, never here). Override via env HELIO_MCP_CMD /
