@@ -61,6 +61,15 @@ def test_load_window_skips_malformed_files(isolated_history_dir):
     assert window == []
 
 
+def test_load_window_skips_invalid_utf8_files(isolated_history_dir):
+    isolated_history_dir.mkdir(parents=True)
+    # Write a file with invalid UTF-8 bytes
+    (isolated_history_dir / "2026-08-08.json").write_bytes(b'\xff\xfe\x00 invalid utf8 \x80\x81')
+    # Should not raise UnicodeDecodeError; should skip the file gracefully
+    window = history.load_window(date(2026, 8, 9), lookback_days=7)
+    assert window == []
+
+
 def test_load_window_returns_no_files_directory(tmp_path, monkeypatch):
     monkeypatch.setattr(history, "HISTORY_DIR", tmp_path / "does-not-exist")
     assert history.load_window(date(2026, 8, 9), lookback_days=7) == []

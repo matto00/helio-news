@@ -135,7 +135,7 @@ def load_window(today: date, lookback_days: int) -> list[HistoryEntry]:
             continue
         try:
             raw = json.loads(f.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
             continue
         if not isinstance(raw, list):
             continue
