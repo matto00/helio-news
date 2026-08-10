@@ -734,7 +734,9 @@ _CURATOR_SYS = (
     "things:\n"
     "1. Pick the {n} strongest stories overall for the front-page digest — the "
     "ones a reader must see first. Spread them across sections; don't take all "
-    "from one. Return their slugs in priority order.\n"
+    "from one. A story marked 'running Nth day' that ISN'T escalating (trend "
+    "rising) is often a rehash — weigh a fresh lead story over a stale one at "
+    "similar importance, though a big story can legitimately dominate for days.\n"
     "2. Write a ONE-sentence editor's brief for EACH board named below, framing "
     "what its stories add up to today (e.g. 'Washington is consumed by the "
     "shutdown fight while the Middle East ceasefire holds'). If a board has no "
@@ -754,9 +756,11 @@ def curate(ollama: Ollama, model: str, stories_brief: list[dict],
     lines = []
     for s in stories_brief:
         flag = " BREAKING" if s.get("breaking") else ""
+        running = f" (running day {s['days_running']}, {s.get('trend', '')})" \
+            if s.get("days_running", 0) >= 2 else ""
         lines.append(
             f'- slug="{s["slug"]}" board="{s["board"]}" '
-            f'importance={s.get("importance", 3)}/5{flag}: {s.get("headline", "")}'
+            f'importance={s.get("importance", 3)}/5{flag}{running}: {s.get("headline", "")}'
             + (f" — {s['summary'][:160]}" if s.get("summary") else "")
         )
     user = (

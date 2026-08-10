@@ -24,10 +24,12 @@ from dataclasses import asdict
 from datetime import date
 
 from . import enrichers
+from . import history
 from .agents import Ollama, curate, enrich, layout, sentiment_pass, timed, timings_report
 from .enrichers import briefing
 from .fetch import fetch_all, load_config
 from .helio_client import HelioClient
+from .history import HistoryEntry, write_day as history_write_day
 from .plan_schema import DATA_PANEL_TYPES, DayPlan
 
 REQUIRED_DELETE_TOOLS = {"delete_panel", "delete_data_source", "delete_data_type"}
@@ -89,6 +91,15 @@ def _board_slug(name: str) -> str:
     return "".join(c.lower() if c.isalnum() else "-" for c in name).strip("-")
 
 
+def _continuity_brief_fields(story) -> dict:
+    """The curator fatigue signal for one story: {days_running, trend},
+    both code-computed ground truth (news.history.ground_truth) — zeroed out
+    when the historian/verifier passes didn't confirm a continuation."""
+    continuity = getattr(story, "_continuity", None) or {}
+    return {"days_running": continuity.get("days_running", 0),
+           "trend": continuity.get("trend", "")}
+
+
 def build_plan(config: dict):
     """Fetch → gemma passes (triage/planner/summarizer) → the two qwen editorial
     passes (sentiment, curator). Returns (plan, articles, curation)."""
@@ -123,6 +134,7 @@ def build_plan(config: dict):
         "slug": s.slug, "board": routing.get(s.domain, dcfg.get("overview", "News Overview")),
         "headline": s.headline, "subject": s.subject, "importance": s.importance,
         "breaking": s.breaking, "summary": s.summary,
+        **_continuity_brief_fields(s),
     } for s in plan.stories]
     with timed("curator"):
         curation = curate(ol, models.get("curator", "gpt-oss:latest"), stories_brief,
@@ -140,6 +152,7 @@ def plan_to_dict(plan: DayPlan) -> dict:
             {**{k: v for k, v in asdict(s).items() if k != "panels"},
              "image": s.hero_image(),
              "facts": getattr(s, "_facts", []),
+             "continuity": getattr(s, "_continuity", None),
              "panels": [asdict(p) for p in s.panels]}
             for s in plan.stories
         ],
@@ -181,8 +194,10 @@ def _panel_color(sd, story, colors: dict) -> str:
 
 
 def story_markdown(story) -> str:
-    """One story's markdown panel body: summary + a linked headlines list. The
-    section title is set on the panel, so it's deliberately NOT repeated here."""
+    """One story's markdown panel body: summary + a linked headlines list +
+    (when the historian/verifier passes confirmed one) a one-sentence
+    continuity note. The section title is set on the panel, so it's
+    deliberately NOT repeated here."""
     parts: list[str] = []
     if story.summary:
         parts.append(story.summary.strip())
@@ -191,6 +206,10 @@ def story_markdown(story) -> str:
         parts.append("\n**Headlines**")
         for a in arts[:6]:
             parts.append(f"- [{a.title}]({a.url}) — {a.source}")
+    continuity = getattr(story, "_continuity", None)
+    note = (continuity or {}).get("note", "")
+    if note:
+        parts.append(f"\n*{note}*")
     return "\n".join(parts) or story.headline
 
 
@@ -376,7 +395,8 @@ async def apply_plan(plan: DayPlan, articles: list, config: dict, curation: dict
         # Day-in-review: measured shape-of-the-day charts (never model-invented),
         # overview only. Neutral — these are meta, not good/bad news.
         for sd, title in ((briefing.domain_mix(plan), "What kind of day"),
-                          (briefing.source_volume(plan, articles), "Who's publishing")):
+                          (briefing.source_volume(plan, articles), "Who's publishing"),
+                          (briefing.recap(plan, config), "This week")):
             if sd is None or sd.key in seen:
                 continue
             seen.add(sd.key)
@@ -408,6 +428,14 @@ def main(argv: list[str] | None = None) -> int:
     if not plan.stories:
         print("No stories produced; nothing to build.", file=sys.stderr)
         return 1
+
+    # Persist today's headlines for tomorrow's continuity matching — only on a
+    # real run, never --plan-only (a dev loop re-running the same morning must
+    # not fabricate multiple "days" of history).
+    hist_cfg = config.get("history", {})
+    history_write_day(plan.day, [HistoryEntry.from_story(s, plan.day.isoformat())
+                                 for s in plan.stories],
+                      int(hist_cfg.get("retention_days", 60)))
 
     asyncio.run(apply_plan(plan, articles, config, curation, cleanup=not args.keep))
     print(timings_report(), file=sys.stderr)
