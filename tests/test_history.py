@@ -236,3 +236,32 @@ def test_group_entries_keeps_unrelated_stories_separate():
 
 def test_group_entries_empty_list():
     assert history.group_entries([], threshold=0.3) == []
+
+
+def test_group_entries_transitive_clustering_via_bridging_entry():
+    """Genuine transitive case: a and c don't share enough tokens directly,
+    but both bridge through b — proves union-find actually handles the
+    multi-day continuation arc (day 1 & day 4 disconnected, but linked
+    through days 2 & 3). Pairwise scores (threshold 0.3):
+    - a–b: 0.50 ✓ (share: rate, cuts)
+    - b–c: 0.33 ✓ (share: inflation)
+    - a–c: 0.00 ✗ (no overlap; would stay separate without transitive closure)
+    """
+    entries = [
+        history.HistoryEntry(slug="a", headline="Fed weighs rate cuts", subject="",
+                             domain="markets", importance=2, breaking=False,
+                             sentiment="neutral", summary="", article_count=1,
+                             entities=[], day="2026-08-05"),
+        history.HistoryEntry(slug="b", headline="Rate cuts seen, inflation concerns",
+                             subject="", domain="markets", importance=3, breaking=False,
+                             sentiment="neutral", summary="", article_count=1,
+                             entities=[], day="2026-08-07"),
+        history.HistoryEntry(slug="c", headline="Inflation data released", subject="",
+                             domain="markets", importance=4, breaking=False,
+                             sentiment="neutral", summary="", article_count=1,
+                             entities=[], day="2026-08-09"),
+    ]
+    groups = history.group_entries(entries, threshold=0.3)
+    # All three must be in ONE group, proving transitive closure works:
+    assert len(groups) == 1, f"Expected 1 group, got {len(groups)}: {groups}"
+    assert {e.slug for e in groups[0]} == {"a", "b", "c"}
