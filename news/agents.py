@@ -531,6 +531,146 @@ def numeric_facts(ollama: Ollama, model_extract: str, model_critic: str, story: 
     return verified if len(verified) >= MIN_NUMERIC_FACTS else []
 
 
+# ── pass 3e: headline continuity (historian + adversarial verifier) ──────────
+# Two turns, both gpt-oss, mirroring extract→critic: the HISTORIAN judges the
+# one thing code can't — is a keyword-matched past story really the SAME
+# ongoing event, or coincidental topic overlap? — and drafts a one-sentence
+# continuity note. Day counts and trend direction are never trusted from the
+# model: news.history.ground_truth computes them from the stored record, and
+# a mismatch between the historian's trend claim and that ground truth is
+# rejected before the verifier is even spent. The VERIFIER then adversarially
+# re-judges is_continuation, same skeptical-by-default posture as the numbers
+# critic. Either check failing drops continuity for that story entirely — it
+# just renders with no continuity note/panel, same fail-soft rule as every
+# other enricher.
+
+_HISTORIAN_SYS = (
+    "You are a news editor deciding whether TODAY's story is a continuation of "
+    "stories your desk already covered on past days, or just a coincidental topic "
+    "overlap. You are given today's story and a list of CANDIDATE past stories "
+    "that share keywords with it (each with its date, headline, and importance "
+    "1-5). Decide is_continuation=true ONLY if the candidates are genuinely "
+    "reporting on the SAME ongoing event or situation as today's story — not "
+    "merely the same topic area (e.g. two different Fed stories a week apart "
+    "about DIFFERENT policy actions are NOT a continuation; a team's game "
+    "yesterday and a DIFFERENT game today are NOT a continuation). If true, "
+    "judge whether the story's importance has been rising, falling, or holding "
+    "steady across the days, and write ONE sentence framing the continuity for "
+    "a reader (e.g. 'Fourth consecutive day of coverage, escalating from a "
+    "routine update to today's lead story.'). If is_continuation=false, set "
+    "trend='steady' and note=''. Return ONLY JSON "
+    '{"is_continuation","trend","note"}.'
+)
+
+
+def historian_pass(ollama: Ollama, model: str, story: dict, candidates: list[dict],
+                   think: str | None = None) -> dict:
+    """Judges whether `candidates` (real stored past occurrences, already
+    matched by news.history.find_candidates — never invented here) are
+    genuinely the same ongoing story as `story`, and drafts a continuity
+    note. Short-circuits with no ollama call when there are no candidates."""
+    if not candidates:
+        return {"is_continuation": False, "trend": "steady", "note": ""}
+    listed = "\n".join(
+        f'- {c["day"]}: "{c["headline"]}" (importance {c["importance"]}/5)'
+        for c in candidates
+    )
+    user = (
+        f"Today's story: {story.get('headline')}\n"
+        f"Domain: {story.get('domain', '')}\n"
+        f"Importance: {story.get('importance')}/5\n\n"
+        f"Candidate past stories (share keywords with today's):\n{listed}"
+    )
+    out = ollama.chat_json(model, _HISTORIAN_SYS, user, temperature=0.2, think=think)
+    trend = str(out.get("trend", "")).strip().lower()
+    return {
+        "is_continuation": bool(out.get("is_continuation")),
+        "trend": trend if trend in ("rising", "falling", "steady") else "steady",
+        "note": str(out.get("note") or "").strip()[:240],
+    }
+
+
+_VERIFY_CONTINUATION_SYS = (
+    "You are a skeptical editor double-checking a colleague's claim that TODAY's "
+    "story is a continuation of specific past stories. You are given today's "
+    "story, the past stories claimed as the same ongoing event, and the "
+    "colleague's one-sentence note. Reject (confirmed=false) UNLESS the past "
+    "stories are clearly about the SAME event or situation as today's, not just "
+    "the same general topic — when genuinely uncertain, reject. Also reject if "
+    "the note asserts anything not supported by the listed stories. Return ONLY "
+    'JSON {"confirmed"}.'
+)
+
+
+def verify_continuation(ollama: Ollama, model: str, story: dict, candidates: list[dict],
+                        historian_out: dict, think: str | None = None) -> bool:
+    """Adversarial audit of the historian's is_continuation claim — same
+    relevance-judge role critic_numbers plays for extracted figures. Never
+    called (no ollama spend) when the historian already said no."""
+    if not candidates or not historian_out.get("is_continuation"):
+        return False
+    listed = "\n".join(
+        f'- {c["day"]}: "{c["headline"]}" (importance {c["importance"]}/5)'
+        for c in candidates
+    )
+    user = (
+        f"Today's story: {story.get('headline')}\n\n"
+        f"Claimed past occurrences:\n{listed}\n\n"
+        f"Colleague's note: \"{historian_out.get('note', '')}\""
+    )
+    out = ollama.chat_json(model, _VERIFY_CONTINUATION_SYS, user,
+                           temperature=0.1, think=think)
+    return bool(out.get("confirmed"))
+
+
+def continuity_facts(ollama: Ollama, model_historian: str, model_verifier: str,
+                     story: dict, entities: list[str], window: list,
+                     match_threshold: float, think_historian: str | None = None,
+                     think_verifier: str | None = None) -> dict | None:
+    """Full continuity pipeline for one story → a `_continuity` dict, or
+    None. Code matches candidates (news.history.find_candidates) and computes
+    the ground-truth day-count/trend; the historian judges is_continuation +
+    drafts the note; a code-side trend check runs before spending the
+    verifier call; the verifier then adversarially audits is_continuation.
+    Any failure at any step → None, so the story just renders with no
+    continuity data — same fail-soft posture every enricher already has."""
+    from . import history as _history
+
+    candidates = _history.find_candidates(
+        story.get("headline", ""), story.get("subject", ""), entities,
+        window, match_threshold)
+    if not candidates:
+        return None
+
+    candidate_dicts = [{"day": c.entry.day, "headline": c.entry.headline,
+                        "importance": c.entry.importance} for c in candidates]
+
+    with timed("historian"):
+        h_out = historian_pass(ollama, model_historian, story, candidate_dicts,
+                               think_historian)
+    if not h_out["is_continuation"]:
+        return None
+
+    ground = _history.ground_truth(int(story.get("importance") or 0), candidates)
+    if not _history.trend_matches(h_out["trend"], ground):
+        return None            # historian's own trend claim already inconsistent
+
+    with timed("verifier"):
+        confirmed = verify_continuation(ollama, model_verifier, story,
+                                        candidate_dicts, h_out, think_verifier)
+    if not confirmed:
+        return None
+
+    return {
+        "is_continuation": True,
+        "days_running": ground["days_running"],
+        "first_seen": ground["first_seen"],
+        "trend": h_out["trend"],
+        "note": h_out["note"],
+        "occurrences": candidate_dicts,
+    }
+
+
 # ── pass 3b: sentiment ──────────────────────────────────────────────────────────
 # A separate editorial pass (qwen3:8b, not gemma) run once over the whole day. It
 # tags each story good/bad/neutral so run.py can tint that story's metric/chart
