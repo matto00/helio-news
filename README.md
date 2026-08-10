@@ -19,6 +19,7 @@ RSS (feedparser) ─► full text ─► model sequence (ollama, sequential) ─
   config/outlets    trafilatura  1 triage    cluster + domain + importance + breaking
                     (top 3/story) 2 extract   pull the story's key figures from the bodies
                     cached        3 critic    audit each figure against the source text
+                                  3b historian/verifier  judge + audit multi-day continuity
                                   4 planner   pick panels from an offered MENU
                                   5 summarize subject + headline + summary
                                   6 layout    size every panel on the 12-col grid
@@ -69,6 +70,7 @@ everything traceable to a source sentence.
 | `news/fetch.py` | RSS ingestion, lead-image extraction, full-text hydration (trafilatura, cached in `state/bodies/`), `--check` feed validator |
 | `news/agents.py` | the model sequence (triage → extract → critic → planner → summarizer → layout) + sentiment/curator editorial passes |
 | `news/plan_schema.py` | the planner contract; validates/repairs gemma output |
+| `news/history.py` | persistent day/week/month headline memory — store, candidate matching, day-count/trend ground truth |
 | `news/enrichers/` | pluggable aux-data: `stocks.py` (yfinance), `series.py` (contextual data), `coverage.py`, `briefing.py`, `facts.py` |
 | `news/providers/` | real external data sources for `series:` — `fred.py` (economic series), `yahoo.py` (commodities/FX/crypto) |
 | `news/helio_client.py` | MCP client wrapper (spawns the helio MCP server over stdio) |
@@ -90,6 +92,7 @@ invented by a model.
 | `stock:TICKER` (metric) | yfinance | latest price + day change |
 | `series:<provider>:<id>[:monthly]` | a **real public dataset** (FRED / Yahoo) for a quantity the story is about — put on a trend line, captioned with its source; `:monthly` aggregates a dense daily series to a monthly average *in a helio pipeline* | a configured series (`series:` in config) is central to the story |
 | `research:series` | a data series **an agent (Claude + web search) found** for the story from an authoritative public source — held to the fact panel's honesty bar (allowlisted domain + a verbatim quote re-verified against the source) | `research.enabled` + a lead/breaking story with no configured `series:` match, within the per-run budget |
+| `history:timeline` | this story's own multi-day record, historian-judged + verifier-audited | ≥3 verified past occurrences of the same ongoing story |
 | `coverage:sources` | the story's own articles | ≥3 outlets covering it |
 | `coverage:timeline` | article timestamps | ≥3 distinct hours — shows a story breaking |
 | briefing pie/bar/metrics | the day's fetch stats | always (the "at a glance" strip) |
@@ -152,6 +155,13 @@ Schedule it: see `deploy/news.service` (installs as a systemd *user* timer).
   config. The `layout` pass is the cheapest one to upgrade — it runs once per
   run, not once per story.
 - **Want stocks back every day:** set `stocks.breaking_only: false`.
+- **Headline history:** `history:` in `outlets.yaml` controls retention
+  (`retention_days`, default 60 — covers day/week/month buckets, filtered at
+  read time from the raw day-files, not separately rolled up),
+  `match_threshold` (how much keyword/entity overlap makes a past story a
+  "candidate"), and the weekly recap's `recap.lookback_days`/`max_stories`.
+  Stored under `state/history/` (gitignored), one JSON file per day, written
+  only on real runs — never `--plan-only`.
 
 ### Gotchas worth knowing
 
