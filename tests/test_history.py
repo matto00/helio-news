@@ -146,3 +146,53 @@ def test_entities_from_articles_handles_no_matched_attr():
         pass
 
     assert history.entities_from_articles([Bare()]) == []
+
+
+def _candidate(day, importance):
+    entry = history.HistoryEntry(
+        slug="x", headline="Fed cuts rates", subject="", domain="markets",
+        importance=importance, breaking=False, sentiment="neutral", summary="",
+        article_count=1, entities=[], day=day)
+    return history.Candidate(entry=entry, score=0.5)
+
+
+def test_ground_truth_no_candidates():
+    g = history.ground_truth(4, [])
+    assert g == {"days_running": 1, "first_seen": None, "expected_trend": "steady"}
+
+
+def test_ground_truth_days_running_counts_distinct_days_plus_today():
+    candidates = [_candidate("2026-08-06", 2), _candidate("2026-08-07", 3),
+                  _candidate("2026-08-08", 3)]
+    g = history.ground_truth(4, candidates)
+    assert g["days_running"] == 4          # 3 distinct past days + today
+    assert g["first_seen"] == "2026-08-06"
+
+
+def test_ground_truth_expected_trend_rising():
+    g = history.ground_truth(5, [_candidate("2026-08-06", 2)])
+    assert g["expected_trend"] == "rising"
+
+
+def test_ground_truth_expected_trend_falling():
+    g = history.ground_truth(2, [_candidate("2026-08-06", 5)])
+    assert g["expected_trend"] == "falling"
+
+
+def test_ground_truth_expected_trend_steady():
+    g = history.ground_truth(3, [_candidate("2026-08-06", 3)])
+    assert g["expected_trend"] == "steady"
+
+
+def test_ground_truth_uses_earliest_candidate_for_delta():
+    # Earliest (by day) candidate's importance is the baseline, not the latest.
+    candidates = [_candidate("2026-08-06", 1), _candidate("2026-08-08", 5)]
+    g = history.ground_truth(5, candidates)
+    assert g["expected_trend"] == "rising"   # 5 - 1(earliest) > 0
+
+
+def test_trend_matches():
+    ground = {"days_running": 2, "first_seen": "2026-08-08", "expected_trend": "rising"}
+    assert history.trend_matches("rising", ground) is True
+    assert history.trend_matches("falling", ground) is False
+    assert history.trend_matches("steady", ground) is False

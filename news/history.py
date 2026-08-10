@@ -182,3 +182,30 @@ def find_candidates(headline: str, subject: str, entities: list[str],
             out.append(Candidate(entry=past, score=score))
     out.sort(key=lambda c: (c.entry.day, c.score), reverse=True)
     return out
+
+
+def ground_truth(today_importance: int, candidates: list[Candidate]) -> dict:
+    """Code-computed facts about a candidate continuation chain — the numbers
+    the historian is NOT trusted to assert on its own, and what the verifier
+    checks the model's prose/trend claim against. Trend compares today's
+    importance to the EARLIEST candidate's (the start of the arc), not the
+    most recent one."""
+    if not candidates:
+        return {"days_running": 1, "first_seen": None, "expected_trend": "steady"}
+    days = {c.entry.day for c in candidates}
+    earliest = min(candidates, key=lambda c: c.entry.day)
+    delta = today_importance - earliest.entry.importance
+    expected_trend = "rising" if delta > 0 else "falling" if delta < 0 else "steady"
+    return {
+        "days_running": len(days) + 1,     # + today
+        "first_seen": min(days),
+        "expected_trend": expected_trend,
+    }
+
+
+def trend_matches(claimed_trend: str, ground: dict) -> bool:
+    """Whether the historian's claimed trend direction matches the
+    code-computed ground truth — the numeric half of the verifier's honesty
+    check (the other half, is_continuation, needs the adversarial model
+    pass since it's a judgement call, not arithmetic)."""
+    return claimed_trend == ground.get("expected_trend")
