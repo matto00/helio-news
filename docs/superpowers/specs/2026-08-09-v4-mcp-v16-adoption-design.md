@@ -1,5 +1,25 @@
 # News v4 — adopt helio-mcp v1.6 primitives (design)
 
+## Status (2026-08-10)
+
+Items 1 (`create_bound_panel`) and 4 (`get_panel_capabilities` audit script)
+are **blocked** on a live backend bug found while verifying this design
+against the real MCP server:
+[HEL-644](https://linear.app/helioapp/issue/HEL-644/create-bound-panel-get-panel-capabilities-drop-numeric) —
+`create_bound_panel` and `get_panel_capabilities` both fail to recognize a
+numeric column produced by a pipeline `select` step (news's documented
+default transform, used by every panel), so they reject bindings the older
+`create_panel`+`bind_panel` chain handles correctly. Confirmed via a live
+throwaway probe (created + fully cleaned up, zero residue). `helio_client.py`
+keeps its current `build_bound_panel()` chain unchanged until HEL-644 ships.
+
+Items 2 (`auto_layout_dashboard`) and 3 (`create_panels` batch) are
+unaffected — neither touches pipeline-output column typing — but
+implementation is paused on the whole spec pending the human partner's
+decision on how to sequence around the block (see conversation). Do not
+resume implementation from this spec without re-checking HEL-644's status
+first.
+
 ## Context
 
 The news pipeline (`news/helio_client.py`, `news/run.py`) was written against
