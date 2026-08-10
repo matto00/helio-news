@@ -114,6 +114,7 @@ from . import stocks as _stocks         # noqa: E402
 from . import facts as _facts           # noqa: E402
 from . import series as _series         # noqa: E402
 from . import research as _research     # noqa: E402
+from . import history as _history       # noqa: E402
 
 # Prefix → builder. Add a new capability here (e.g. "sports": _sports.build).
 # Headlines/summaries are not enrichers — run.py renders them into each story's
@@ -124,4 +125,5 @@ REGISTRY = {
     "facts": _facts.build,
     "series": _series.build,
     "research": _research.build,
+    "history": _history.build,
 }
