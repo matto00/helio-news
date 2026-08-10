@@ -1174,8 +1174,22 @@ Expected: FAIL — `TypeError: story_offers() got an unexpected keyword argument
 
 - [ ] **Step 3: Add the offer**
 
-In `news/agents.py`, `story_offers()` signature and body — add the parameter
-and the offer, right after the `facts:numbers` block:
+First, add the import alongside the existing `_coverage` import near the top
+of `news/agents.py` (find `from .enrichers import coverage as _coverage`):
+
+```python
+from .enrichers import coverage as _coverage
+from .enrichers import history as _history_enricher
+```
+
+Then update `story_offers()` — add the parameter and the offer, right after
+the `facts:numbers` block. Reference `_history_enricher.MIN_OCCURRENCES`
+(Task 8 defines it) rather than hardcoding the threshold a second time —
+`enrichers/history.py`'s `build()` is the single source of truth for how
+many occurrences actually render the panel. (This is already how the
+implemented code works — verified by Task 7's review — this section
+documents it for the record after a stray uncommitted-edit loss during
+execution; see the ledger.)
 
 ```python
 def story_offers(story: dict, arts: list[Article], story_tickers: dict[str, str],
@@ -1198,7 +1212,7 @@ def story_offers(story: dict, arts: list[Article], story_tickers: dict[str, str]
                        f"(amounts, counts, %) pulled and fact-checked from the "
                        f"reporting, shown as a grid of stat tiles"))
 
-    if history_occurrences >= 3:
+    if history_occurrences >= _history_enricher.MIN_OCCURRENCES:
         offers.append(("history:timeline",
                        f"type=table — this story's last {history_occurrences} days "
                        f"of coverage, a quick timeline of how it developed"))
@@ -1207,8 +1221,7 @@ def story_offers(story: dict, arts: list[Article], story_tickers: dict[str, str]
 ```
 
 (The rest of the function is unchanged — this only adds the one new `if`
-block between the existing `facts:numbers` block and the `coverage`
-loop.)
+block between the existing `facts:numbers` block and the `coverage` loop.)
 
 - [ ] **Step 4: Run to verify the offers tests pass**
 
@@ -1703,10 +1716,17 @@ def test_continuity_brief_fields_defaults_when_absent():
 # ── write-gating: history is written on a real run, never --plan-only ───────
 
 def test_plan_only_never_writes_history():
-    fake_plan = SimpleNamespace(day=None, stories=[])
+    from datetime import date
+    # `run.py` does `from .fetch import load_config`, which binds the name
+    # directly into run's own namespace at import time — patching
+    # `news.fetch.load_config` would NOT intercept `run.main`'s call to it.
+    # Patch `run.load_config` (the name run.main actually calls) instead.
+    # `plan.day` must be a real date (not None) — `plan_to_dict` calls
+    # `plan.day.isoformat()` unconditionally in the --plan-only branch.
+    fake_plan = SimpleNamespace(day=date(2026, 8, 9), stories=[])
     with patch.object(run, "build_plan", return_value=(fake_plan, [], {})), \
          patch.object(run, "history_write_day") as write_mock, \
-         patch("news.fetch.load_config", return_value={}):
+         patch.object(run, "load_config", return_value={}):
         run.main(["--plan-only"])
     write_mock.assert_not_called()
 
@@ -1717,11 +1737,15 @@ def test_real_run_writes_history_before_apply_plan():
                                  summary="", _articles=[])
     from datetime import date
     fake_plan = SimpleNamespace(day=date(2026, 8, 9), stories=[fake_story])
+    # `new=lambda *a, **kw: None` (not `return_value=None`) — mocking an
+    # async function with `return_value` leaves the awaited call unresolved,
+    # producing a spurious "coroutine was never awaited" RuntimeWarning; a
+    # plain callable substitute avoids it since `asyncio.run` is also mocked.
     with patch.object(run, "build_plan", return_value=(fake_plan, [], {})), \
          patch.object(run, "history_write_day") as write_mock, \
-         patch.object(run, "apply_plan", return_value=None), \
+         patch.object(run, "apply_plan", new=lambda *a, **kw: None), \
          patch("asyncio.run"), \
-         patch("news.fetch.load_config", return_value={}):
+         patch.object(run, "load_config", return_value={}):
         run.main([])
     write_mock.assert_called_once()
     called_day, called_entries, _retention = write_mock.call_args[0]
