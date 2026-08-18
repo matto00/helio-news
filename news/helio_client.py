@@ -197,6 +197,67 @@ class HelioClient:
         })
         return panel["id"]
 
+    async def create_csv_source(self, name: str, content: str) -> str:
+        """Create a CSV data source from inline text. Returns the source id.
+        Unlike build_bound_panel's inline `create_data_source` (JSON rows),
+        this is for raw tabular data a helio pipeline will aggregate — see
+        build_shape_pipeline/build_steps_pipeline."""
+        source = await self.call("create_csv_data_source", {"name": name, "content": content})
+        return source["id"]
+
+    async def build_shape_pipeline(self, source_id: str, prefix: str, key: str,
+                                   shape_id: str, params: dict) -> str:
+        """Instantiate a smart pipeline shape (time-series/single-row/top-n/...)
+        against an existing source, run it, return the output DataType id.
+        Caller still does its own create_panel/bind_panel (see bind_new_panel) —
+        this only builds and runs the pipeline, same division of labor as
+        build_bound_panel's manual chain."""
+        pipe = await self.call("create_pipeline_from_shape", {
+            "shapeId": shape_id, "sourceDataSourceId": source_id,
+            "outputDataTypeName": _type_name(prefix, key),
+            "name": f"{prefix}-pipe-{key}", "params": params,
+        })
+        run = await self.call("run_pipeline", {"pipelineId": pipe["id"]})
+        return run["outputDataTypeId"]
+
+    async def build_steps_pipeline(self, source_id: str, prefix: str, key: str,
+                                   steps: list[dict]) -> str:
+        """Build a pipeline from hand-rolled steps, for shapes that don't fit
+        (e.g. filter-then-aggregate — no shape combines the two). Mirrors
+        build_bound_panel's step-adding loop. Returns the output DataType id."""
+        pipe = await self.call("create_pipeline", {
+            "name": f"{prefix}-pipe-{key}", "sourceDataSourceId": source_id,
+            "outputDataTypeName": _type_name(prefix, key),
+        })
+        pipeline_id = pipe["id"]
+        for step in steps:
+            await self.call("add_pipeline_step", {
+                "pipelineId": pipeline_id, "type": step["type"], "config": step["config"],
+            })
+        run = await self.call("run_pipeline", {"pipelineId": pipeline_id})
+        return run["outputDataTypeId"]
+
+    async def bind_new_panel(self, dashboard_id: str, title: str, panel_type: str,
+                             output_type_id: str, mapping: dict, *,
+                             config: dict | None = None, chart_type: str | None = None) -> str:
+        """create_panel + bind_panel (+ appearance for a chart) against an
+        already-run pipeline's output DataType. The tail half of
+        build_bound_panel, for callers (build_shape_pipeline/
+        build_steps_pipeline) that built their own pipeline instead of
+        taking a SourceData. Returns the panel id."""
+        create_args: dict = {"dashboardId": dashboard_id, "type": panel_type, "title": title}
+        if config:
+            create_args["config"] = config
+        panel = await self.call("create_panel", create_args)
+        panel_id = panel["id"]
+        await self.call("bind_panel", {
+            "panelId": panel_id, "dataTypeId": output_type_id,
+            "fieldMapping": mapping, "panelType": panel_type,
+        })
+        if chart_type:
+            await self._apply_appearance(panel_id, chart_type=chart_type)
+        return panel_id
+
     # ── dashboard lifecycle ───────────────────────────────────────────────────
     async def set_layout(self, dashboard_id: str, items: list[dict]) -> None:
         """Position panels on the grid via update_dashboard_layout (no-op if the
