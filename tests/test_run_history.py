@@ -85,3 +85,65 @@ def test_history_write_failure_is_non_fatal():
         result = run.main([])
     assert result == 0
     asyncio_mock.assert_called_once()
+
+
+# ── project boards folded into apply_plan ────────────────────────────────────
+
+def test_apply_plan_folds_project_names_into_board_ids_and_calls_build_project_boards():
+    import asyncio
+    from datetime import date
+
+    config = {
+        "dashboards": {"overview": "News Overview", "sections": {"Tech & AI": ["tech", "ai"]}},
+        "projects": {"enabled": True, "items": [{"name": "Helio", "linear_team": "Helio Platform",
+                                                  "repo_path": "/repo/helio"}]},
+    }
+    fake_plan = SimpleNamespace(day=date(2026, 8, 18), stories=[],
+                                resource_prefix=lambda: "news")
+
+    class _FakeHelio:
+        def __init__(self):
+            self.ensured = []
+            self.cleared = []
+
+        async def tool_names(self):
+            return {"delete_data_source", "delete_dashboard", "delete_data_type", "delete_panel"}
+
+        async def ensure_dashboard(self, name):
+            self.ensured.append(name)
+            return f"dash-{name}"
+
+        async def clear_dashboard_panels(self, dashboard_id):
+            self.cleared.append(dashboard_id)
+            return 0
+
+        async def cleanup_news_resources(self):
+            return {"sources": 0, "types": 0}
+
+    fake_helio = _FakeHelio()
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return fake_helio
+
+        async def __aexit__(self, *exc):
+            return False
+
+    # apply_plan's day-in-review loop calls briefing.recap(plan, config) even
+    # with zero stories/articles, and recap() reads real state/history/*.json
+    # files from disk — patch it out so this test doesn't depend on (or
+    # break on changes to) this repo's real history data, and doesn't need
+    # _FakeHelio to implement build_bound_panel/set_layout for a panel this
+    # test isn't about.
+    with patch.object(run.HelioClient, "session", return_value=_FakeSession()), \
+         patch("news.run.briefing.recap", return_value=None), \
+         patch("news.run.build_project_boards") as build_mock:
+        asyncio.run(run.apply_plan(fake_plan, [], config, {}, cleanup=True))
+
+    assert "Helio" in fake_helio.ensured
+    assert "dash-Helio" in fake_helio.cleared
+    build_mock.assert_called_once()
+    call_args = build_mock.call_args.args
+    assert call_args[0] is config
+    assert call_args[1] is fake_helio
+    assert call_args[2]["Helio"] == "dash-Helio"

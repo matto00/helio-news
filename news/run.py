@@ -31,6 +31,7 @@ from .fetch import fetch_all, load_config
 from .helio_client import HelioClient
 from .history import HistoryEntry, write_day as history_write_day
 from .plan_schema import DATA_PANEL_TYPES, DayPlan
+from .projects.build import build_project_boards
 
 REQUIRED_DELETE_TOOLS = {"delete_panel", "delete_data_source", "delete_data_type"}
 
@@ -326,12 +327,15 @@ async def _finish_board(helio, dashboard_id: str, built: list[dict], config: dic
 
 async def apply_plan(plan: DayPlan, articles: list, config: dict, curation: dict,
                      cleanup: bool = True) -> None:
-    """Build the day across an overview board plus the configured section boards."""
+    """Build the day across an overview board plus the configured section boards
+    plus one board per configured project (news/projects/build.py)."""
     dcfg = config.get("dashboards", {})
     overview_name = dcfg.get("overview", "News Overview")
     overview_size = int(dcfg.get("overview_size", 5))
     section_names = list(dcfg.get("sections", {}).keys())
-    all_boards = [overview_name] + section_names
+    pcfg = config.get("projects", {})
+    project_names = [p["name"] for p in pcfg.get("items", [])] if pcfg.get("enabled") else []
+    all_boards = [overview_name] + section_names + project_names
     routing = _domain_to_board(config)
     colors = config.get("sentiment", {}).get("colors", {})
 
@@ -347,8 +351,11 @@ async def apply_plan(plan: DayPlan, articles: list, config: dict, curation: dict
         for name, did in board_ids.items():
             print(f"· board '{name}' → {did}", file=sys.stderr)
 
-        # One cleanup for the whole run: clear every board, then delete the shared
-        # news-* sources/types once (they're not board-scoped).
+        # One cleanup for the whole run: clear every board (news AND project),
+        # then delete the shared news-* sources/types once (they're not
+        # board-scoped) — project-pulse CSV sources use the same news-*-src-*
+        # naming (see news/projects/build.py's `prefix`), so this same sweep
+        # catches their leftovers too, no separate cleanup logic needed.
         if cleanup:
             cleared = 0
             for did in board_ids.values():
@@ -407,6 +414,7 @@ async def apply_plan(plan: DayPlan, articles: list, config: dict, curation: dict
         await _finish_board(helio, did, built, config)
         print(f"· '{overview_name}': {len(built)} panels / {len(picks)} headliners",
               file=sys.stderr)
+        await build_project_boards(config, helio, board_ids)
 
 
 def main(argv: list[str] | None = None) -> int:
