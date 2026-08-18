@@ -45,6 +45,7 @@ models:
   critic: "gpt-oss:latest"      # audits each extracted figure against the source text
   historian: "gpt-oss:latest"   # judges whether a matched past story is really the same one
   verifier: "gpt-oss:latest"    # adversarially audits the historian's continuation claim
+  projects_summary: "gpt-oss:latest"  # "what shipped" narrative pass
 
 # gpt-oss reasoning effort per pass (low | medium | high). Judgement-heavy passes
 # get high; mechanical/structured ones stay low so the model doesn't overthink a
@@ -63,6 +64,7 @@ reasoning:
                               # the same ongoing story, not just the same keywords
   verifier: high              # adversarial audit of the historian's claim, same
                               # skeptical-by-default posture as the numbers critic
+  projects_summary: medium  # mechanical summarization, not judgment-heavy clustering
 
 # Story sentiment → panel background tint (metrics/charts only; summaries/photos
 # stay neutral). A stock panel overrides this with its own price-movement sign.
@@ -86,6 +88,21 @@ dashboards:
     "Tech & AI": ["tech", "ai"]
     "Sports": ["sports"]
     "Markets & Business": ["markets", "business"]
+
+projects:
+  enabled: true
+  lookback_days: 90     # velocity + cycle-time window
+  narrative_days: 7     # "what shipped" rolling window — kept short and
+                         # separate from lookback_days so a quiet week
+                         # doesn't produce an empty narrative panel
+  backlog_top_n: 5
+  items:
+    - name: "Helio"
+      linear_team: "Helio Platform"
+      repo_path: "/home/matt/Development/helio"
+    - name: "Concertino"
+      linear_team: "Concertino"
+      repo_path: "/home/matt/Development/concertino"
 
 # Stocks are for news that MOVES a stock — not a daily price readout. A ticker
 # only earns a chart when its story broke today; set breaking_only: false to go
