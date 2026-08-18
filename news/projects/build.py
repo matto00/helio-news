@@ -28,14 +28,16 @@ async def build_project_boards(config: dict, helio: HelioClient, board_ids: dict
     if not pcfg.get("enabled"):
         return
     for item in pcfg.get("items", []):
-        dashboard_id = board_ids.get(item["name"])
-        if dashboard_id is None:
-            continue
+        name = item.get("name", "<unnamed>")
         try:
+            dashboard_id = board_ids.get(item.get("name", ""))
+            if dashboard_id is None:
+                print(f"· project '{name}' skipped: no matching board id", file=sys.stderr)
+                continue
             await _build_one_project(config, helio, item, dashboard_id)
-            print(f"· project '{item['name']}' board refreshed", file=sys.stderr)
+            print(f"· project '{name}' board refreshed", file=sys.stderr)
         except Exception as e:
-            print(f"· project '{item['name']}' skipped: {e}", file=sys.stderr)
+            print(f"· project '{name}' skipped: {type(e).__name__}: {e}", file=sys.stderr)
 
 
 async def _build_one_project(config: dict, helio: HelioClient, item: dict, dashboard_id: str) -> None:
@@ -104,9 +106,17 @@ async def _build_one_project(config: dict, helio: HelioClient, item: dict, dashb
     effort = config.get("reasoning", {})
     ollama = Ollama(oc.get("host", "http://localhost:11434"),
                     oc.get("timeout_seconds", 180), oc.get("num_ctx"))
-    summary = narrative.project_summary_pass(
-        ollama, models.get("projects_summary", "gpt-oss:latest"), item["name"],
-        narrative_titles, commits, effort.get("projects_summary"))
+    # Isolated from the 4 pipeline-bound panels above: if the narrative pass
+    # fails (ollama down, network issue, etc.) after they've already been
+    # created, fall back to quiet-period text rather than raising and leaving
+    # those panels un-laid-out (the outer except in build_project_boards would
+    # otherwise catch this, log "skipped", and never reach set_layout below).
+    try:
+        summary = narrative.project_summary_pass(
+            ollama, models.get("projects_summary", "gpt-oss:latest"), item["name"],
+            narrative_titles, commits, effort.get("projects_summary"))
+    except Exception:
+        summary = ""
     narrative_panel_id = await helio.add_text_panel(
         dashboard_id, "What Shipped",
         summary or "_Quiet period — nothing shipped._")

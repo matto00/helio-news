@@ -149,3 +149,71 @@ def test_build_project_boards_skips_one_project_on_fetch_failure_not_the_other()
     # ...and got its own layout call; Helio never reached set_layout at all
     assert len(helio.layouts_set) == 1
     assert helio.layouts_set[0][0] == "dash-concertino"
+
+
+def test_build_project_boards_logs_exception_type_not_just_message(capsys):
+    """A bare exception message (e.g. a KeyError's repr, just 'title') is
+    indistinguishable from a real infra failure in an unattended daily log —
+    the type name must be included."""
+    helio = _FakeHelio()
+    board_ids = {"Helio": "dash-helio", "Concertino": "dash-concertino"}
+
+    def fetch_completed(team, lookback):
+        if team == "Helio Platform":
+            raise RuntimeError("boom")
+        return _COMPLETED
+
+    with patch("news.projects.build.linear.fetch_completed", side_effect=fetch_completed), \
+         patch("news.projects.build.linear.fetch_open", return_value=_OPEN), \
+         patch("news.projects.build.gitlog.fetch_recent_subjects", return_value=[]), \
+         patch("news.projects.build.narrative.project_summary_pass", return_value=""):
+        asyncio.run(build.build_project_boards(_config(), helio, board_ids))
+
+    err = capsys.readouterr().err
+    assert "RuntimeError: boom" in err
+
+
+def test_build_project_boards_missing_board_id_logs_and_continues(capsys):
+    """A project with no matching board id (e.g. it fell out of all_boards
+    because its config entry had no 'name') must be skipped with a clear
+    diagnostic, not a silent continue — and must not abort the other project."""
+    helio = _FakeHelio()
+    board_ids = {"Concertino": "dash-concertino"}  # "Helio" missing on purpose
+
+    with patch("news.projects.build.linear.fetch_completed", return_value=_COMPLETED), \
+         patch("news.projects.build.linear.fetch_open", return_value=_OPEN), \
+         patch("news.projects.build.gitlog.fetch_recent_subjects", return_value=[]), \
+         patch("news.projects.build.narrative.project_summary_pass", return_value=""):
+        asyncio.run(build.build_project_boards(_config(), helio, board_ids))
+
+    err = capsys.readouterr().err
+    assert "project 'Helio' skipped: no matching board id" in err
+    # Concertino still built despite Helio having no board id
+    assert len(helio.text_panels_added) == 1
+    assert helio.text_panels_added[0][0] == "dash-concertino"
+    assert len(helio.layouts_set) == 1
+
+
+def test_narrative_failure_falls_back_to_quiet_text_not_a_skipped_board():
+    """If the narrative model pass raises after the 4 pipeline-bound panels
+    already exist, the project must still finish (fallback text, set_layout
+    called with all 5 panels) rather than being caught by the outer
+    except and left with orphaned, never-laid-out panels."""
+    helio = _FakeHelio()
+    board_ids = {"Helio": "dash-helio"}
+    config = _config()
+    config["projects"]["items"] = config["projects"]["items"][:1]  # just Helio
+
+    with patch("news.projects.build.linear.fetch_completed", return_value=_COMPLETED), \
+         patch("news.projects.build.linear.fetch_open", return_value=_OPEN), \
+         patch("news.projects.build.gitlog.fetch_recent_subjects", return_value=[]), \
+         patch("news.projects.build.narrative.project_summary_pass",
+               side_effect=RuntimeError("ollama down")):
+        asyncio.run(build.build_project_boards(config, helio, board_ids))
+
+    # narrative panel got the quiet-period fallback text, not left uncreated
+    assert len(helio.text_panels_added) == 1
+    assert helio.text_panels_added[0][2] == "_Quiet period — nothing shipped._"
+    # and the board still got a full 5-panel layout, not abandoned mid-build
+    assert len(helio.layouts_set) == 1
+    assert len(helio.layouts_set[0][1]) == 5

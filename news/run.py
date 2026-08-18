@@ -334,7 +334,8 @@ async def apply_plan(plan: DayPlan, articles: list, config: dict, curation: dict
     overview_size = int(dcfg.get("overview_size", 5))
     section_names = list(dcfg.get("sections", {}).keys())
     pcfg = config.get("projects", {})
-    project_names = [p["name"] for p in pcfg.get("items", [])] if pcfg.get("enabled") else []
+    project_names = ([p["name"] for p in pcfg.get("items", []) if p.get("name")]
+                      if pcfg.get("enabled") else [])
     all_boards = [overview_name] + section_names + project_names
     routing = _domain_to_board(config)
     colors = config.get("sentiment", {}).get("colors", {})
@@ -363,6 +364,12 @@ async def apply_plan(plan: DayPlan, articles: list, config: dict, curation: dict
             gone = await helio.cleanup_news_resources()
             print(f"· cleanup: {cleared} panels, {gone['sources']} sources, "
                   f"{gone['types']} types removed", file=sys.stderr)
+
+        # Project-pulse boards are independent of the news pipeline (no shared
+        # data, no shared model passes) — build them right after cleanup so a
+        # failure anywhere in the news-board-building code below can never
+        # leave an otherwise-successful project-pulse build blank.
+        await build_project_boards(config, helio, board_ids)
 
         prefix = plan.resource_prefix()
 
@@ -414,7 +421,6 @@ async def apply_plan(plan: DayPlan, articles: list, config: dict, curation: dict
         await _finish_board(helio, did, built, config)
         print(f"· '{overview_name}': {len(built)} panels / {len(picks)} headliners",
               file=sys.stderr)
-        await build_project_boards(config, helio, board_ids)
 
 
 def main(argv: list[str] | None = None) -> int:

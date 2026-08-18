@@ -147,3 +147,113 @@ def test_apply_plan_folds_project_names_into_board_ids_and_calls_build_project_b
     assert call_args[0] is config
     assert call_args[1] is fake_helio
     assert call_args[2]["Helio"] == "dash-Helio"
+
+
+def test_apply_plan_skips_project_items_missing_name():
+    """A projects.items entry missing 'name' (a config typo) must not raise
+    KeyError before HelioClient.session even opens — that would take down
+    the whole daily run, news boards included, not just project boards."""
+    import asyncio
+    from datetime import date
+
+    config = {
+        "dashboards": {"overview": "News Overview", "sections": {}},
+        "projects": {"enabled": True, "items": [
+            {"linear_team": "Helio Platform", "repo_path": "/repo/helio"},  # no "name"
+            {"name": "Concertino", "linear_team": "Concertino", "repo_path": "/repo/concertino"},
+        ]},
+    }
+    fake_plan = SimpleNamespace(day=date(2026, 8, 18), stories=[],
+                                resource_prefix=lambda: "news")
+
+    class _FakeHelio:
+        def __init__(self):
+            self.ensured = []
+
+        async def tool_names(self):
+            return {"delete_data_source", "delete_dashboard", "delete_data_type", "delete_panel"}
+
+        async def ensure_dashboard(self, name):
+            self.ensured.append(name)
+            return f"dash-{name}"
+
+        async def clear_dashboard_panels(self, dashboard_id):
+            return 0
+
+        async def cleanup_news_resources(self):
+            return {"sources": 0, "types": 0}
+
+    fake_helio = _FakeHelio()
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return fake_helio
+
+        async def __aexit__(self, *exc):
+            return False
+
+    with patch.object(run.HelioClient, "session", return_value=_FakeSession()), \
+         patch("news.run.briefing.recap", return_value=None), \
+         patch("news.run.build_project_boards") as build_mock:
+        asyncio.run(run.apply_plan(fake_plan, [], config, {}, cleanup=True))
+
+    # the unnamed item never got a board; Concertino did
+    assert "Concertino" in fake_helio.ensured
+    assert not any(name == "" for name in fake_helio.ensured)
+    call_args = build_mock.call_args.args
+    assert call_args[2] == {"News Overview": "dash-News Overview",
+                            "Concertino": "dash-Concertino"}
+
+
+def test_apply_plan_calls_build_project_boards_immediately_after_cleanup():
+    """Project-pulse boards must build right after the shared cleanup pass,
+    not at the very end of apply_plan — otherwise a later failure in
+    news-board-building leaves the already-cleared project boards blank for
+    the whole day even though project-pulse never touches news data."""
+    import asyncio
+    from datetime import date
+
+    config = {
+        "dashboards": {"overview": "News Overview", "sections": {"Tech & AI": ["tech", "ai"]}},
+        "projects": {"enabled": True, "items": [{"name": "Helio", "linear_team": "Helio Platform",
+                                                  "repo_path": "/repo/helio"}]},
+    }
+    fake_plan = SimpleNamespace(day=date(2026, 8, 18), stories=[],
+                                resource_prefix=lambda: "news")
+    calls: list[str] = []
+
+    class _FakeHelio:
+        async def tool_names(self):
+            return {"delete_data_source", "delete_dashboard", "delete_data_type", "delete_panel"}
+
+        async def ensure_dashboard(self, name):
+            return f"dash-{name}"
+
+        async def clear_dashboard_panels(self, dashboard_id):
+            return 0
+
+        async def cleanup_news_resources(self):
+            calls.append("cleanup")
+            return {"sources": 0, "types": 0}
+
+    fake_helio = _FakeHelio()
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return fake_helio
+
+        async def __aexit__(self, *exc):
+            return False
+
+    def _record_build(*a, **kw):
+        calls.append("build_project_boards")
+
+    with patch.object(run.HelioClient, "session", return_value=_FakeSession()), \
+         patch("news.run.briefing.recap", side_effect=lambda *a, **kw: (calls.append("recap"), None)[1]), \
+         patch("news.run.build_project_boards", side_effect=_record_build):
+        asyncio.run(run.apply_plan(fake_plan, [], config, {}, cleanup=True))
+
+    # build_project_boards must run right after cleanup, before the
+    # news-board-building code (represented here by the day-in-review recap call)
+    assert calls.index("build_project_boards") < calls.index("recap")
+    assert calls.index("cleanup") < calls.index("build_project_boards")

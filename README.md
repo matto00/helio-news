@@ -25,6 +25,13 @@ RSS (feedparser) ─► full text ─► model sequence (ollama, sequential) ─
                                   6 layout    size every panel on the 12-col grid
 ```
 
+Alongside the news boards, the same daily run also builds one **project pulse**
+board per configured project (`news/projects/build.py`) — Linear ticket
+velocity/cycle-time/backlog age plus recent git activity, with a short model
+narrative of what shipped. It's independent of the news pipeline (no shared
+data, no shared model passes) and is gated on its own `LINEAR_API_KEY`; see
+the Extending section for how to track a new project.
+
 Each built story's lead articles are hydrated to **full body text** (trafilatura,
 cached in `state/bodies/`) before the model passes run — so summaries and the
 figure extractor reason off substance, not RSS teasers. Any fetch that fails or
@@ -118,6 +125,10 @@ FRED_API_KEY=...
 # search). Only used when `research.enabled: true` in config; needs `anthropic`
 # installed. Off by default.
 ANTHROPIC_API_KEY=sk-ant-...
+# optional: enables project-pulse boards (Linear ticket metrics per configured
+# project). A Linear Personal API Key, from Linear's Settings → API. Without
+# it, project boards are skipped with a warning; nothing else is affected.
+LINEAR_API_KEY=lin_api_...
 EOF
 
 # ollama must be serving the models named in config/outlets.yaml:
@@ -156,6 +167,10 @@ Schedule it: see `deploy/news.service` (installs as a systemd *user* timer).
   config. The `layout` pass is the cheapest one to upgrade — it runs once per
   run, not once per story.
 - **Want stocks back every day:** set `stocks.breaking_only: false`.
+- **Track a new project:** add an entry (`name`, `linear_team`, `repo_path`) to
+  `projects.items` in `config/outlets.yaml` — no code change needed. The next
+  run ensures its board, pulls its Linear + git activity, and builds it
+  alongside the existing projects.
 - **Headline history:** `history:` in `outlets.yaml` controls retention
   (`retention_days`, default 60 — covers day/week/month buckets, filtered at
   read time from the raw day-files, not separately rolled up),

@@ -89,7 +89,11 @@ def _query(query: str, variables: dict) -> list[dict] | None:
     data = resp.json()
     if "errors" in data:
         raise RuntimeError(f"Linear API error: {data['errors']}")
-    return data["data"]["issues"]["nodes"]
+    nodes = data["data"]["issues"]["nodes"]
+    if len(nodes) == 250:
+        print(f"· Linear query for team={variables.get('teamName', '?')!r} hit the 250-row "
+              f"cap — results may be truncated (oldest tickets silently dropped)", file=sys.stderr)
+    return nodes
 
 
 def fetch_completed(team_name: str, lookback_days: int) -> list[dict] | None:
