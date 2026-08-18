@@ -63,7 +63,7 @@ async def _build_one_project(config: dict, helio: HelioClient, item: dict, dashb
         completed_src, prefix, "velocity", "time-series",
         {"timeField": "completedAt", "granularity": "week",
          "measures": [{"fn": "count", "field": "id", "alias": "ticketsCompleted"}]})
-    await helio.bind_new_panel(
+    velocity_panel_id = await helio.bind_new_panel(
         dashboard_id, "Velocity", "chart", velocity_type,
         {"xAxis": "completedAt", "yAxis": "ticketsCompleted"}, chart_type="bar")
 
@@ -72,7 +72,7 @@ async def _build_one_project(config: dict, helio: HelioClient, item: dict, dashb
         completed_src, prefix, "cycletime", "single-row",
         {"mode": "aggregate",
          "measures": [{"fn": "avg", "field": "cycleTimeDays", "alias": "avgCycleTimeDays"}]})
-    await helio.bind_new_panel(
+    cycle_time_panel_id = await helio.bind_new_panel(
         dashboard_id, "Avg Cycle Time (days)", "metric", cycle_type, {"value": "avgCycleTimeDays"})
 
     # open bug count — filter then aggregate; no shape combines the two
@@ -82,14 +82,14 @@ async def _build_one_project(config: dict, helio: HelioClient, item: dict, dashb
                                         "conditions": [{"field": "isBug", "operator": "=", "value": "true"}]}},
          {"type": "aggregate", "config": {"groupBy": [],
                                            "aggregations": [{"alias": "openBugCount", "field": "id", "fn": "count"}]}}])
-    await helio.bind_new_panel(
+    open_bugs_panel_id = await helio.bind_new_panel(
         dashboard_id, "Open Bugs", "metric", bug_type, {"value": "openBugCount"})
 
     # oldest open tickets
     oldest_type = await helio.build_shape_pipeline(
         open_src, prefix, "oldest", "top-n",
         {"measure": "ageDays", "direction": "desc", "n": top_n})
-    await helio.bind_new_panel(
+    oldest_panel_id = await helio.bind_new_panel(
         dashboard_id, "Oldest Open Tickets", "table", oldest_type, {"columns": "title,ageDays"})
 
     # narrative
@@ -107,6 +107,20 @@ async def _build_one_project(config: dict, helio: HelioClient, item: dict, dashb
     summary = narrative.project_summary_pass(
         ollama, models.get("projects_summary", "gpt-oss:latest"), item["name"],
         narrative_titles, commits, effort.get("projects_summary"))
-    await helio.add_text_panel(
+    narrative_panel_id = await helio.add_text_panel(
         dashboard_id, "What Shipped",
         summary or "_Quiet period — nothing shipped._")
+
+    # Fixed layout — project-pulse always builds exactly these 5 panels in a
+    # known, fixed role (unlike the news pipeline's variable per-story panel
+    # set), so a static 12-column grid needs no model sizing pass. Narrative
+    # spans the top as a header row; velocity takes the left column below it;
+    # the two metrics sit side by side in the top-right; oldest-open spans
+    # beneath them at the same combined width. Verified no overlaps by hand.
+    await helio.set_layout(dashboard_id, [
+        {"panelId": narrative_panel_id, "x": 0, "y": 0, "w": 12, "h": 5},
+        {"panelId": velocity_panel_id, "x": 0, "y": 5, "w": 6, "h": 9},
+        {"panelId": cycle_time_panel_id, "x": 6, "y": 5, "w": 3, "h": 4},
+        {"panelId": open_bugs_panel_id, "x": 9, "y": 5, "w": 3, "h": 4},
+        {"panelId": oldest_panel_id, "x": 6, "y": 9, "w": 6, "h": 6},
+    ])
