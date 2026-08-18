@@ -31,4 +31,4 @@ def project_summary_pass(ollama, model: str, project_name: str,
         "recent_commits": commit_subjects,
     })
     result = ollama.chat_json(model, _SYSTEM, user, think=think)
-    return result.get("summary", "")
+    return result.get("summary", "") if isinstance(result, dict) else ""

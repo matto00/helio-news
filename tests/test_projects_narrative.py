@@ -30,3 +30,13 @@ def test_project_summary_pass_returns_empty_string_on_empty_response():
         ollama, "gpt-oss:latest", "Helio", completed_titles=[], commit_subjects=[])
 
     assert result == ""
+
+
+def test_project_summary_pass_returns_empty_string_on_non_dict_response():
+    ollama = MagicMock()
+    ollama.chat_json.return_value = ["unexpected", "list", "response"]
+
+    result = narrative.project_summary_pass(
+        ollama, "gpt-oss:latest", "Helio", completed_titles=[], commit_subjects=[])
+
+    assert result == ""
