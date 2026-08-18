@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -226,14 +227,23 @@ class HelioClient:
     async def cleanup_news_resources(self, type_prefix: str = "news_out_") -> dict:
         """Delete previous runs' news sources (cascades their pipelines) and the
         orphaned pipeline-output DataTypes. Matches any `news-*…-src-*` source so
-        it also sweeps ad-hoc/probe resources. Idempotent."""
+        it also sweeps ad-hoc/probe resources. Idempotent.
+
+        Best-effort per resource: a source/type a panel *outside* today's boards
+        still binds to (a stray manual/scratch dashboard, say) 409s on delete —
+        that must not abort cleanup for the rest of the workspace, since the
+        board-building work this run already did is real and worth keeping."""
         deleted = {"sources": 0, "types": 0}
         ctx = await self.workspace_context()
         for s in ctx.get("dataSources", []):
             name = s.get("name", "")
             if name.startswith("news-") and "-src-" in name:
-                await self.call("delete_data_source", {"dataSourceId": s["id"]})
-                deleted["sources"] += 1
+                try:
+                    await self.call("delete_data_source", {"dataSourceId": s["id"]})
+                    deleted["sources"] += 1
+                except RuntimeError as e:
+                    print(f"· cleanup: skipped source {s['id']} ({name}): {e}",
+                          file=sys.stderr)
         # Re-read: deleting a source orphans its companion DataType (sourceId
         # cleared, not deleted). Remove BOTH our pipeline-output types
         # (`news_out_*`) and those orphaned companions (`news-*-src-*`).
@@ -241,8 +251,12 @@ class HelioClient:
         for t in ctx.get("dataTypes", []):
             name = t.get("name", "")
             if name.startswith(type_prefix) or (name.startswith("news-") and "-src-" in name):
-                await self.call("delete_data_type", {"dataTypeId": t["id"]})
-                deleted["types"] += 1
+                try:
+                    await self.call("delete_data_type", {"dataTypeId": t["id"]})
+                    deleted["types"] += 1
+                except RuntimeError as e:
+                    print(f"· cleanup: skipped type {t['id']} ({name}): {e}",
+                          file=sys.stderr)
         return deleted
 
 
