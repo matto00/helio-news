@@ -26,4 +26,11 @@ ExecStart=/home/matt/Development/helio-news/.venv/bin/python -m news.run
 # `+` = run as root so it can suspend without polkit. Only re-suspends if the
 # machine woke up for this run; no-ops if you're using it.
 ExecStopPost=+/home/matt/Development/helio-news/deploy/suspend-if-woken.sh
-TimeoutStartSec=1800
+# 45 min. The run measured 22.7 min on 2026-08-28 (10 stories, ~84s of model
+# time each) and the old 1800s ceiling left only ~7 min of slack. The margin
+# is deliberately generous so that a timeout MEANS something: at 2700s, a run
+# that still overruns is not a heavy news day, it is a run that spent a very
+# large amount of time blocked — almost certainly waiting out helio 429s in
+# helio-mcp's retry (see HEL-495; the live budget is 120 req/60s). Check the
+# `429 rate limited ... retrying` lines in `journalctl -u news.service` first.
+TimeoutStartSec=2700
