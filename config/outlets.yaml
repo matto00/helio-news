@@ -14,8 +14,15 @@
 defaults:
   # How far back a run considers an article "new" (hours).
   lookback_hours: 30
-  # Max stories the day's dashboard is built around.
-  top_stories: 8
+  # Max stories the day's dashboard is built around. Must leave room above
+  # `per_section_stories` x (number of `dashboards.sections`) for the fill
+  # round — at 2 x 4 sections, 8 slots are reserved and 2 float.
+  # Cost check before raising: ~84s of model time per story (2026-08-28 run).
+  top_stories: 10
+  # Slots each section board is reserved in triage before the remaining slots
+  # go to the strongest stories of any domain. 0 restores the old behaviour of
+  # ranking the day globally — which on a lopsided day left whole boards empty.
+  per_section_stories: 2
   # Articles handed to the (small) triage model after heuristic pre-ranking.
   triage_candidates: 80
   # Per story, how many of its lead articles get their full body fetched

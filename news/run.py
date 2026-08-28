@@ -25,7 +25,8 @@ from datetime import date
 
 from . import enrichers
 from . import history
-from .agents import Ollama, curate, enrich, layout, sentiment_pass, timed, timings_report
+from .agents import (Ollama, curate, domain_to_board as _domain_to_board, enrich, layout,
+                     normalize_domain, sentiment_pass, timed, timings_report)
 from .enrichers import briefing
 from .fetch import fetch_all, load_config
 from .helio_client import HelioClient
@@ -77,15 +78,6 @@ def _clamp(kind: str, w: int, h: int) -> tuple[int, int]:
 # `dashboards.sections`: board name → the domains it collects). Routing is
 # deterministic from a story's domain; the curator only picks which stories lead
 # the overview and writes each board's brief.
-
-
-def _domain_to_board(config: dict) -> dict[str, str]:
-    sections = config.get("dashboards", {}).get("sections", {})
-    out: dict[str, str] = {}
-    for board, domains in sections.items():
-        for d in domains or []:
-            out[str(d).strip().lower()] = board
-    return out
 
 
 def _board_slug(name: str) -> str:
@@ -375,10 +367,20 @@ async def apply_plan(plan: DayPlan, articles: list, config: dict, curation: dict
 
         # Route stories to their section board by domain (deterministic).
         by_board: dict[str, list] = {name: [] for name in section_names}
+        unrouted: list[str] = []
         for story in plan.stories:
-            board = routing.get(story.domain)
+            # normalize_domain, not the raw value: triage's `domain` is model
+            # free text, and a stray ' Sports ' must not fall off every board.
+            board = routing.get(normalize_domain(story.domain))
             if board in by_board:
                 by_board[board].append(story)
+            else:
+                unrouted.append(f"{story.slug} [{story.domain}]")
+        # `general` legitimately routes nowhere (overview-only), but a domain
+        # that SHOULD have matched and didn't used to vanish in silence.
+        if unrouted:
+            print(f"· {len(unrouted)} stories on no section board (overview only): "
+                  f"{', '.join(unrouted)}", file=sys.stderr)
 
         # ── section boards: full, sentiment-tinted treatment ─────────────────
         for name in section_names:

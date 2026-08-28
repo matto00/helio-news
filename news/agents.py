@@ -147,26 +147,116 @@ _TRIAGE_SYS = (
     "materially in the last day — a new event, ruling, result, deal or "
     "announcement; false for ongoing/analysis coverage), and the list of article "
     "numbers it covers. If more than {top} distinct stories exist, keep the {top} "
-    "MOST IMPORTANT and drop the rest — never merge unrelated events just to fit. "
+    "MOST IMPORTANT and drop the rest — never merge unrelated events just to fit.\n"
+    "{sections}"
     'Return ONLY JSON: {"stories":[{"slug","headline","domain","importance",'
     '"breaking","articles":[int,...]}]}, at most {top}, most important first.'
 )
 
 
+def domain_to_board(config: dict) -> dict[str, str]:
+    """{story domain → section board name} from config `dashboards.sections`.
+    Lives here rather than in run.py because both the triage quota and the
+    board routing key off it, and they must never disagree."""
+    sections = config.get("dashboards", {}).get("sections", {})
+    out: dict[str, str] = {}
+    for board, domains in sections.items():
+        for d in domains or []:
+            out[normalize_domain(d)] = board
+    return out
+
+
+def normalize_domain(value) -> str:
+    """Triage's `domain` is free text from a model — casing and stray whitespace
+    are routine. Normalize once, here, so a ' Sports ' never silently fails to
+    match a configured section and drops the story off every board."""
+    return str(value or "").strip().lower()
+
+
+def _section_prompt(routing: dict[str, str], per_section: int) -> str:
+    """The section-coverage instruction, or empty when no sections are configured."""
+    if not routing or per_section <= 0:
+        return ""
+    boards: dict[str, list[str]] = {}
+    for domain, board in routing.items():
+        boards.setdefault(board, []).append(domain)
+    listed = "; ".join(f"{board} ({'/'.join(sorted(domains))})"
+                       for board, domains in boards.items())
+    return (f"The day is published as these section boards: {listed}. "
+            f"Cover the day BROADLY: include up to {per_section} of the strongest "
+            f"stories for EACH section whenever the articles support one, before "
+            f"spending remaining slots on additional stories from any section. "
+            f"Never invent a story to fill a section — if the articles carry no "
+            f"real sports story today, return none.\n")
+
+
+def apply_section_quota(stories: list[dict], routing: dict[str, str],
+                        per_section: int, top: int) -> list[dict]:
+    """Reserve each section board up to `per_section` slots, then fill the rest
+    by importance, up to `top` overall.
+
+    The prompt asks for breadth; this enforces it. Triage ranked the day
+    GLOBALLY before this existed, so a tech-heavy morning filled all 8 slots
+    with tech and the Sports / Markets boards rendered empty. Judgement (which
+    sports story is the strongest) stays with the model; the bookkeeping (that
+    sports gets a slot at all) is code — the same split as assign_articles and
+    the planner/layout passes.
+
+    Unused quota is not wasted: a section with no stories gives its slots back
+    to the fill round. A story whose domain routes to no board (`general`) is
+    never reserved but still competes for fill slots, since the overview digest
+    can use it."""
+    if not stories:
+        return []
+    if per_section <= 0 or not routing:
+        return sorted(stories, key=_importance, reverse=True)[:top]
+
+    ranked = sorted(enumerate(stories), key=lambda p: (-_importance(p[1]), p[0]))
+    reserved_by_board: dict[str, int] = {}
+    chosen: list[tuple[int, dict]] = []
+    leftovers: list[tuple[int, dict]] = []
+
+    for idx, story in ranked:
+        board = routing.get(normalize_domain(story.get("domain")))
+        if board is not None and reserved_by_board.get(board, 0) < per_section \
+                and len(chosen) < top:
+            reserved_by_board[board] = reserved_by_board.get(board, 0) + 1
+            chosen.append((idx, story))
+        else:
+            leftovers.append((idx, story))
+
+    for pair in leftovers:
+        if len(chosen) >= top:
+            break
+        chosen.append(pair)
+
+    return [story for _, story in sorted(chosen, key=lambda p: (-_importance(p[1]), p[0]))]
+
+
+def _importance(story: dict) -> float:
+    try:
+        return float(story.get("importance", 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def triage(ollama: Ollama, model: str, articles: list[Article], top: int,
-           think: str | None = None) -> list[dict]:
+           think: str | None = None, routing: dict[str, str] | None = None,
+           per_section: int = 0) -> list[dict]:
     lines = []
     for i, a in enumerate(articles):
         tag = f" (watchlist: {', '.join(a.matched)})" if a.matched else ""
         lines.append(f"{i}. [{a.topic}] {a.title} — {a.source}{tag}")
+    routing = routing or {}
     out = ollama.chat_json(
         model,
-        _TRIAGE_SYS.replace("{top}", str(top)),
+        _TRIAGE_SYS.replace("{top}", str(top))
+                   .replace("{sections}", _section_prompt(routing, per_section)),
         "Articles:\n" + "\n".join(lines),
         think=think,
     )
     stories = out.get("stories", []) if isinstance(out, dict) else []
-    return stories[:top]
+    return apply_section_quota(stories, routing, per_section, top)
 
 
 # ── article ↔ story membership (re-derived in code, not trusted from triage) ────
@@ -969,9 +1059,15 @@ def enrich(articles: list[Article], config: dict, run_day: date | None = None) -
                     oc.get("timeout_seconds", 180), oc.get("num_ctx"))
 
     candidates = rank_articles(articles, defaults.get("triage_candidates", 80))
+    # Triage is told which section boards exist and reserves each a slot budget —
+    # without that it ranks globally and a lopsided news day leaves whole boards
+    # empty. Routing is derived from the same config run.py routes on, so the
+    # two can never disagree about which domains reach which board.
     with timed("triage"):
         stories = triage(ollama, models.get("triage", "gpt-oss:latest"),
-                         candidates, defaults.get("top_stories", 8), effort.get("triage"))
+                         candidates, defaults.get("top_stories", 8), effort.get("triage"),
+                         routing=domain_to_board(config),
+                         per_section=int(defaults.get("per_section_stories", 2)))
 
     # Re-derive which articles belong to each story from content, not from triage's
     # fragile index list (see assign_articles). A story that matches no article is

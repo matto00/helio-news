@@ -18,16 +18,26 @@ from pathlib import Path
 import requests
 
 _API = "https://api.linear.app/graphql"
+# `first:` is a PAGE size, not a result limit — Linear caps a single page at
+# 250. Walk `pageInfo.endCursor` to get the whole set; without this a team with
+# more than one page had its oldest tickets silently dropped, quietly skewing
+# every cycle-time and backlog-age number on its project-pulse board.
+_PAGE_SIZE = 250
+# Belt-and-braces bound on the walk, so a pathological cursor can't spin the
+# daily run forever. 40 pages = 10k tickets, far beyond any real team here.
+MAX_PAGES = 40
 _ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 _warned = False
 
 _COMPLETED_QUERY = """
-query($teamName: String!, $since: DateTimeOrDuration!) {
+query($teamName: String!, $since: DateTimeOrDuration!, $after: String) {
   issues(
     filter: { team: { name: { eq: $teamName } }, completedAt: { gte: $since } }
     first: 250
+    after: $after
     orderBy: updatedAt
   ) {
+    pageInfo { hasNextPage endCursor }
     nodes {
       identifier
       title
@@ -42,12 +52,14 @@ query($teamName: String!, $since: DateTimeOrDuration!) {
 """
 
 _OPEN_QUERY = """
-query($teamName: String!) {
+query($teamName: String!, $after: String) {
   issues(
     filter: { team: { name: { eq: $teamName } }, completedAt: { null: true }, canceledAt: { null: true } }
     first: 250
+    after: $after
     orderBy: createdAt
   ) {
+    pageInfo { hasNextPage endCursor }
     nodes {
       identifier
       title
@@ -82,18 +94,31 @@ def _query(query: str, variables: dict) -> list[dict] | None:
                   "to enable them)", file=sys.stderr)
             _warned = True
         return None
-    resp = requests.post(_API, json={"query": query, "variables": variables},
-                         headers={"Authorization": key, "Content-Type": "application/json"},
-                         timeout=20)
-    resp.raise_for_status()
-    data = resp.json()
-    if "errors" in data:
-        raise RuntimeError(f"Linear API error: {data['errors']}")
-    nodes = data["data"]["issues"]["nodes"]
-    if len(nodes) == 250:
-        print(f"· Linear query for team={variables.get('teamName', '?')!r} hit the 250-row "
-              f"cap — results may be truncated (oldest tickets silently dropped)", file=sys.stderr)
-    return nodes
+    rows: list[dict] = []
+    cursor: str | None = None
+    for _ in range(MAX_PAGES):
+        resp = requests.post(_API,
+                             json={"query": query, "variables": {**variables, "after": cursor}},
+                             headers={"Authorization": key, "Content-Type": "application/json"},
+                             timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        if "errors" in data:
+            raise RuntimeError(f"Linear API error: {data['errors']}")
+        issues = data["data"]["issues"]
+        rows.extend(issues["nodes"])
+        page = issues.get("pageInfo") or {}
+        if not page.get("hasNextPage"):
+            return rows
+        cursor = page.get("endCursor")
+        if not cursor:
+            # hasNextPage without a cursor: nothing to advance on, so stop
+            # rather than re-request page one forever.
+            return rows
+    print(f"· Linear query for team={variables.get('teamName', '?')!r} stopped at the "
+          f"{MAX_PAGES}-page budget ({len(rows)} tickets) — results may be truncated",
+          file=sys.stderr)
+    return rows
 
 
 def fetch_completed(team_name: str, lookback_days: int) -> list[dict] | None:
