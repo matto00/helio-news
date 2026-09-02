@@ -14,8 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
-# Panel types helio supports (from the MCP `create_panel` enum). `image` is an
-# unbound content panel (config.imageUrl/imageFit) — no data source needed.
+# Output kinds helio panels can bind to (from OutputKind; place_outputs
+# creates the panel). `image` is an unbound content panel
+# (config.imageUrl/imageFit) — no data source needed.
 DATA_PANEL_TYPES = {"metric", "chart", "table"}
 TEXT_PANEL_TYPES = {"text", "markdown"}
 ALLOWED_PANEL_TYPES = DATA_PANEL_TYPES | TEXT_PANEL_TYPES | {"image", "divider"}

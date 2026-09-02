@@ -101,47 +101,58 @@ class HelioClient:
     # ── build a bound data panel from an enricher SourceData ──────────────────
     async def build_bound_panel(self, dashboard_id: str, prefix: str, title: str,
                                 sd, background: str = "") -> str:
-        """source → trivial pipeline → run → panel → bind. Returns panel id.
+        """source → single-call pipeline+output → place_outputs. Returns panel id.
 
         `background`, if given, tints the finished panel (sentiment coloring —
         good news green, bad news red). Applied as a partial appearance patch so
-        it does not disturb a chart panel's chart-type appearance."""
+        it does not disturb a chart panel's chart-type appearance.
+
+        HEL-940/HEL-910: panels no longer carry a binding (`dataTypeId`/
+        `fieldMapping`/subtype config) — that all lives on the Output now.
+        `create_pipeline`'s single call creates the pipeline AND its Output
+        (`outputs[]`) in one round trip (replaces the old create_pipeline →
+        add_pipeline_step* → run_pipeline → create_panel → bind_panel chain);
+        `place_outputs` replaces create_panel + bind_panel for the data-bound
+        case."""
         source = await self.call("create_data_source", {
             "name": f"{prefix}-src-{sd.key}",
             "columns": sd.columns,
             "rows": sd.rows,
         })
         source_id = source["id"]
-        pipe = await self.call("create_pipeline", {
-            "name": f"{prefix}-pipe-{sd.key}",
-            "sourceDataSourceId": source_id,
-            "outputDataTypeName": _type_name(prefix, sd.key),
-        })
-        pipeline_id = pipe["id"]
         # Apply the enricher's transform steps (default: an identity select so the
         # pipeline has explicit output columns). A series enricher supplies real
         # steps here — e.g. groupBy month + avg — so helio does the aggregation.
-        for step in sd.pipeline_steps():
-            await self.call("add_pipeline_step", {
-                "pipelineId": pipeline_id, "type": step["type"],
-                "config": step.get("config", {}),
-            })
-        run = await self.call("run_pipeline", {"pipelineId": pipeline_id})
-        output_type_id = run["outputDataTypeId"]
-
-        # v1.5 subtype config (collection base/layout, chart display options +
-        # annotation, table density/order) travels at create time; bind_panel
-        # merge-patches the binding on top without disturbing it.
-        create_args = {"dashboardId": dashboard_id, "type": sd.panel_type, "title": title}
-        config = sd.panel_config()
-        if config:
-            create_args["config"] = config
-        panel = await self.call("create_panel", create_args)
-        panel_id = panel["id"]
-        await self.call("bind_panel", {
-            "panelId": panel_id, "dataTypeId": output_type_id,
-            "fieldMapping": sd.mapping, "panelType": sd.panel_type,
+        steps = [
+            {"clientId": f"step{i}", "type": step["type"], "config": step.get("config", {})}
+            for i, step in enumerate(sd.pipeline_steps())
+        ]
+        # v1.5 subtype config (collection base/layout, chart display options,
+        # table density/order) now lives on the Output's own config, alongside
+        # fieldMapping — not on the panel.
+        output_config = {**sd.panel_config(), "fieldMapping": sd.mapping}
+        output_spec = {
+            "kind": sd.panel_type,
+            "name": _type_name(prefix, sd.key),
+            "config": output_config,
+        }
+        if steps:
+            output_spec["nodeStepClientId"] = steps[-1]["clientId"]
+        pipe = await self.call("create_pipeline", {
+            "name": f"{prefix}-pipe-{sd.key}",
+            "source": {"sourceId": source_id},
+            "steps": steps,
+            "outputs": [output_spec],
         })
+        pipeline_id = pipe["id"]
+        await self.call("run_pipeline", {"pipelineId": pipeline_id})
+        output_id = pipe["outputs"][0]["id"]
+
+        placed = await self.call("place_outputs", {
+            "dashboardId": dashboard_id,
+            "items": [{"outputId": output_id, "title": title}],
+        })
+        panel_id = placed[0]["id"]
         chart_type = sd.chart_type if sd.panel_type == "chart" else None
         await self._apply_appearance(panel_id, chart_type=chart_type,
                                      background=background)
@@ -171,7 +182,7 @@ class HelioClient:
 
     async def add_text_panel(self, dashboard_id: str, title: str, content: str,
                              markdown: bool = True) -> str:
-        panel = await self.call("create_panel", {
+        panel = await self.call("create_content_panel", {
             "dashboardId": dashboard_id,
             "type": "markdown" if markdown else "text",
             "title": title,
@@ -189,7 +200,7 @@ class HelioClient:
         config: dict = {"imageUrl": image_url, "imageFit": fit}
         if caption:
             config["caption"] = caption
-        panel = await self.call("create_panel", {
+        panel = await self.call("create_content_panel", {
             "dashboardId": dashboard_id,
             "type": "image",
             "title": title,
@@ -206,54 +217,80 @@ class HelioClient:
         return source["id"]
 
     async def build_shape_pipeline(self, source_id: str, prefix: str, key: str,
-                                   shape_id: str, params: dict) -> str:
+                                   shape_id: str, params: dict, *,
+                                   output_kind: str = "table") -> str:
         """Instantiate a smart pipeline shape (time-series/single-row/top-n/...)
-        against an existing source, run it, return the output DataType id.
-        Caller still does its own create_panel/bind_panel (see bind_new_panel) —
-        this only builds and runs the pipeline, same division of labor as
-        build_bound_panel's manual chain."""
-        pipe = await self.call("create_pipeline_from_shape", {
-            "shapeId": shape_id, "sourceDataSourceId": source_id,
-            "outputDataTypeName": _type_name(prefix, key),
-            "name": f"{prefix}-pipe-{key}", "params": params,
+        against an existing source, run it, return the Output id.
+
+        HEL-940/HEL-910: `create_pipeline_from_shape` was retired — it always
+        created a brand-new pipeline. The replacement, `add_outputs_from_shape`,
+        expands the shape onto an EXISTING pipeline, so this now creates a
+        bare pipeline (no steps/outputs of its own) first, then expands the
+        shape onto it, passing `output_kind` so the Output is created with
+        the RIGHT kind up front — an Output's `kind` is immutable once
+        created (same convention as a panel's `type`), so the caller's
+        intended panel kind (chart/metric/table/...) must be supplied here,
+        not patched in later via bind_new_panel. Caller still does its own
+        place_outputs (see bind_new_panel) — this only builds and runs the
+        pipeline, same division of labor as build_bound_panel's chain."""
+        pipe = await self.call("create_pipeline", {
+            "name": f"{prefix}-pipe-{key}",
+            "source": {"sourceId": source_id},
         })
-        run = await self.call("run_pipeline", {"pipelineId": pipe["id"]})
-        return run["outputDataTypeId"]
+        expanded = await self.call("add_outputs_from_shape", {
+            "pipelineId": pipe["id"], "shapeId": shape_id, "params": params,
+            "outputName": _type_name(prefix, key), "outputKind": output_kind,
+        })
+        await self.call("run_pipeline", {"pipelineId": pipe["id"]})
+        return expanded["output"]["id"]
 
     async def build_steps_pipeline(self, source_id: str, prefix: str, key: str,
-                                   steps: list[dict]) -> str:
+                                   steps: list[dict], *, output_kind: str = "table") -> str:
         """Build a pipeline from hand-rolled steps, for shapes that don't fit
-        (e.g. filter-then-aggregate — no shape combines the two). Mirrors
-        build_bound_panel's step-adding loop. Returns the output DataType id."""
+        (e.g. filter-then-aggregate — no shape combines the two). Returns the
+        Output id. HEL-940/HEL-910: single-call create_pipeline now takes
+        `steps`/`outputs` inline; `output_kind` is fixed at creation (see
+        build_shape_pipeline's docstring for why it can't be patched later)."""
+        client_steps = [
+            {"clientId": f"step{i}", "type": step["type"], "config": step["config"]}
+            for i, step in enumerate(steps)
+        ]
         pipe = await self.call("create_pipeline", {
-            "name": f"{prefix}-pipe-{key}", "sourceDataSourceId": source_id,
-            "outputDataTypeName": _type_name(prefix, key),
+            "name": f"{prefix}-pipe-{key}",
+            "source": {"sourceId": source_id},
+            "steps": client_steps,
+            "outputs": [{
+                "kind": output_kind,
+                "name": _type_name(prefix, key),
+                "nodeStepClientId": client_steps[-1]["clientId"],
+            }],
         })
-        pipeline_id = pipe["id"]
-        for step in steps:
-            await self.call("add_pipeline_step", {
-                "pipelineId": pipeline_id, "type": step["type"], "config": step["config"],
-            })
-        run = await self.call("run_pipeline", {"pipelineId": pipeline_id})
-        return run["outputDataTypeId"]
+        await self.call("run_pipeline", {"pipelineId": pipe["id"]})
+        return pipe["outputs"][0]["id"]
 
     async def bind_new_panel(self, dashboard_id: str, title: str, panel_type: str,
-                             output_type_id: str, mapping: dict, *,
+                             output_id: str, mapping: dict, *,
                              config: dict | None = None, chart_type: str | None = None) -> str:
-        """create_panel + bind_panel (+ appearance for a chart) against an
-        already-run pipeline's output DataType. The tail half of
-        build_bound_panel, for callers (build_shape_pipeline/
-        build_steps_pipeline) that built their own pipeline instead of
-        taking a SourceData. Returns the panel id."""
-        create_args: dict = {"dashboardId": dashboard_id, "type": panel_type, "title": title}
-        if config:
-            create_args["config"] = config
-        panel = await self.call("create_panel", create_args)
-        panel_id = panel["id"]
-        await self.call("bind_panel", {
-            "panelId": panel_id, "dataTypeId": output_type_id,
-            "fieldMapping": mapping, "panelType": panel_type,
+        """update_output (to set fieldMapping/subtype config) + place_outputs
+        (+ appearance for a chart) against an already-run pipeline's Output.
+        The tail half of build_bound_panel, for callers (build_shape_pipeline/
+        build_steps_pipeline) that built their own pipeline instead of taking
+        a SourceData. Returns the panel id. `panel_type` here is retained only
+        for the caller's own bookkeeping/chart_type dispatch — it MUST already
+        match the Output's `kind` (set at creation via build_shape_pipeline/
+        build_steps_pipeline's `output_kind`, since kind is immutable).
+
+        HEL-940/HEL-910: a panel placement carries only `outputId` now —
+        `fieldMapping`/subtype `config` live on the Output itself, so this
+        PATCHes the Output (update_output) before placing it, rather than
+        PATCHing the panel (the old bind_panel)."""
+        output_config = {**(config or {}), "fieldMapping": mapping}
+        await self.call("update_output", {"outputId": output_id, "config": output_config})
+        placed = await self.call("place_outputs", {
+            "dashboardId": dashboard_id,
+            "items": [{"outputId": output_id, "title": title}],
         })
+        panel_id = placed[0]["id"]
         if chart_type:
             await self._apply_appearance(panel_id, chart_type=chart_type)
         return panel_id
@@ -286,15 +323,40 @@ class HelioClient:
         return len(panels)
 
     async def cleanup_news_resources(self, type_prefix: str = "news_out_") -> dict:
-        """Delete previous runs' news sources (cascades their pipelines) and the
-        orphaned pipeline-output DataTypes. Matches any `news-*…-src-*` source so
-        it also sweeps ad-hoc/probe resources. Idempotent.
+        """Delete previous runs' news pipelines (cascades their Outputs) and
+        sources. Matches any `news-*…-src-*` source, and any pipeline whose
+        name starts with `news-` or produced a `news_out_*`-prefixed Output,
+        so it also sweeps ad-hoc/probe resources. Idempotent.
 
-        Best-effort per resource: a source/type a panel *outside* today's boards
-        still binds to (a stray manual/scratch dashboard, say) 409s on delete —
-        that must not abort cleanup for the rest of the workspace, since the
-        board-building work this run already did is real and worth keeping."""
-        deleted = {"sources": 0, "types": 0}
+        HEL-940/HEL-910: the DataType model (and `delete_data_type`) was
+        retired outright by HEL-904 — a pipeline's Outputs are deleted by
+        deleting the pipeline (`delete_pipeline` cascades its Outputs), not
+        as a separate DataType-delete pass. `list_outputs`/`workspace_context`
+        no longer carry a `dataTypes` field.
+
+        Best-effort per resource: a source/pipeline a panel *outside* today's
+        boards still binds to (a stray manual/scratch dashboard, say) 409s on
+        delete — that must not abort cleanup for the rest of the workspace,
+        since the board-building work this run already did is real and worth
+        keeping."""
+        deleted = {"sources": 0, "pipelines": 0}
+        ctx = await self.workspace_context()
+        for p in ctx.get("pipelines", []):
+            name = p.get("name", "")
+            outputs = p.get("outputs", []) or []
+            matches_output = any(
+                (o.get("name") or "").startswith(type_prefix) for o in outputs
+            )
+            if name.startswith("news-") or matches_output:
+                try:
+                    await self.call("delete_pipeline", {"pipelineId": p["id"]})
+                    deleted["pipelines"] += 1
+                except RuntimeError as e:
+                    print(f"· cleanup: skipped pipeline {p['id']} ({name}): {e}",
+                          file=sys.stderr)
+        # Re-read: deleting a pipeline does not delete its source. Sweep any
+        # `news-*…-src-*` source separately (covers sources whose pipeline
+        # already failed to create, or was deleted in a prior partial run).
         ctx = await self.workspace_context()
         for s in ctx.get("dataSources", []):
             name = s.get("name", "")
@@ -304,19 +366,6 @@ class HelioClient:
                     deleted["sources"] += 1
                 except RuntimeError as e:
                     print(f"· cleanup: skipped source {s['id']} ({name}): {e}",
-                          file=sys.stderr)
-        # Re-read: deleting a source orphans its companion DataType (sourceId
-        # cleared, not deleted). Remove BOTH our pipeline-output types
-        # (`news_out_*`) and those orphaned companions (`news-*-src-*`).
-        ctx = await self.workspace_context()
-        for t in ctx.get("dataTypes", []):
-            name = t.get("name", "")
-            if name.startswith(type_prefix) or (name.startswith("news-") and "-src-" in name):
-                try:
-                    await self.call("delete_data_type", {"dataTypeId": t["id"]})
-                    deleted["types"] += 1
-                except RuntimeError as e:
-                    print(f"· cleanup: skipped type {t['id']} ({name}): {e}",
                           file=sys.stderr)
         return deleted
 

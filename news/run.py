@@ -34,7 +34,10 @@ from .history import HistoryEntry, write_day as history_write_day
 from .plan_schema import DATA_PANEL_TYPES, DayPlan
 from .projects.build import build_project_boards
 
-REQUIRED_DELETE_TOOLS = {"delete_panel", "delete_data_source", "delete_data_type"}
+# HEL-940/HEL-910: `delete_data_type` was retired outright by HEL-904 (the
+# DataType model no longer exists) — `delete_pipeline` (which cascades its
+# Outputs) is the replacement cleanup_news_resources() actually calls now.
+REQUIRED_DELETE_TOOLS = {"delete_panel", "delete_data_source", "delete_pipeline"}
 
 GRID_COLS = 12
 

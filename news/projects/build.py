@@ -64,7 +64,8 @@ async def _build_one_project(config: dict, helio: HelioClient, item: dict, dashb
     velocity_type = await helio.build_shape_pipeline(
         completed_src, prefix, "velocity", "time-series",
         {"timeField": "completedAt", "granularity": "week",
-         "measures": [{"fn": "count", "field": "id", "alias": "ticketsCompleted"}]})
+         "measures": [{"fn": "count", "field": "id", "alias": "ticketsCompleted"}]},
+        output_kind="chart")
     velocity_panel_id = await helio.bind_new_panel(
         dashboard_id, "Velocity", "chart", velocity_type,
         {"xAxis": "completedAt", "yAxis": "ticketsCompleted"}, chart_type="bar")
@@ -73,7 +74,8 @@ async def _build_one_project(config: dict, helio: HelioClient, item: dict, dashb
     cycle_type = await helio.build_shape_pipeline(
         completed_src, prefix, "cycletime", "single-row",
         {"mode": "aggregate",
-         "measures": [{"fn": "avg", "field": "cycleTimeDays", "alias": "avgCycleTimeDays"}]})
+         "measures": [{"fn": "avg", "field": "cycleTimeDays", "alias": "avgCycleTimeDays"}]},
+        output_kind="metric")
     cycle_time_panel_id = await helio.bind_new_panel(
         dashboard_id, "Avg Cycle Time (days)", "metric", cycle_type, {"value": "avgCycleTimeDays"})
 
@@ -83,14 +85,16 @@ async def _build_one_project(config: dict, helio: HelioClient, item: dict, dashb
         [{"type": "filter", "config": {"combinator": "AND",
                                         "conditions": [{"field": "isBug", "operator": "=", "value": "true"}]}},
          {"type": "aggregate", "config": {"groupBy": [],
-                                           "aggregations": [{"alias": "openBugCount", "field": "id", "fn": "count"}]}}])
+                                           "aggregations": [{"alias": "openBugCount", "field": "id", "fn": "count"}]}}],
+        output_kind="metric")
     open_bugs_panel_id = await helio.bind_new_panel(
         dashboard_id, "Open Bugs", "metric", bug_type, {"value": "openBugCount"})
 
     # oldest open tickets
     oldest_type = await helio.build_shape_pipeline(
         open_src, prefix, "oldest", "top-n",
-        {"measure": "ageDays", "direction": "desc", "n": top_n})
+        {"measure": "ageDays", "direction": "desc", "n": top_n},
+        output_kind="table")
     oldest_panel_id = await helio.bind_new_panel(
         dashboard_id, "Oldest Open Tickets", "table", oldest_type, {"columns": "title,ageDays"})
 

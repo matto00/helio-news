@@ -31,14 +31,14 @@ class SourceData:
     key: str                                   # stable, name-safe id fragment
     columns: list[dict]                         # [{"name","type"}, ...]
     rows: list[list]                            # row-major values
-    mapping: dict[str, str]                     # bind_panel fieldMapping
+    mapping: dict[str, str]                     # Output config.fieldMapping (set via update_output)
     panel_type: str                             # metric | chart | table | collection
     # line | bar | pie | scatter. The enricher picks the shape that suits its
     # own data (a % -change comparison is a bar, a price history is a line);
     # the planner may override it. Ignored for non-chart panels.
     chart_type: str | None = None
 
-    # ── v1.5 panel config (create_panel `config`) ─────────────────────────────
+    # ── v1.5 subtype config (now lives on the Output, set via update_output) ──
     # All optional; each is consumed only for the panel_type it belongs to, so an
     # enricher sets just the ones that apply to its own shape.
     chart_options: dict | None = None          # chart: config.chartOptions (per chart type)
@@ -66,7 +66,7 @@ class SourceData:
                                "config": {"fields": self.column_names()}}]
 
     def panel_config(self) -> dict:
-        """The create_panel `config` for this panel_type — v1.5 subtype config
+        """The Output `config` for this panel_type — v1.5 subtype config
         (collection base/layout, chart display options + annotation, table
         density/order). Empty when nothing applies (metric, or an unadorned
         chart), so the caller can omit `config` entirely."""

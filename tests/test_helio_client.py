@@ -16,7 +16,7 @@ class _StubCalls:
     async def __call__(self, tool, args=None):
         args = args or {}
         self.calls.append((tool, args))
-        key = (tool, args.get("dataTypeId") or args.get("dataSourceId"))
+        key = (tool, args.get("pipelineId") or args.get("dataSourceId"))
         if key in self.failures:
             raise RuntimeError(self.failures[key])
         return self.responses.get(tool, {})
@@ -28,21 +28,22 @@ def _client(stub: _StubCalls) -> HelioClient:
     return client
 
 
-def test_cleanup_news_resources_skips_type_still_bound_to_a_panel():
-    """A DataType a stray/foreign panel still binds to 409s on delete — that
-    must not abort cleanup for the rest of the workspace or fail the run."""
+def test_cleanup_news_resources_skips_pipeline_still_bound_to_a_panel():
+    """A pipeline a stray/foreign panel still binds an Output to 409s on
+    delete — that must not abort cleanup for the rest of the workspace or
+    fail the run."""
     ctx = {
         "dataSources": [{"id": "src-1", "name": "news-overview-src-foo"}],
-        "dataTypes": [
-            {"id": "type-1", "name": "news_out_foo"},
-            {"id": "type-2", "name": "news_out_bar"},
+        "pipelines": [
+            {"id": "pipe-1", "name": "news-overview-pipe-foo", "outputs": []},
+            {"id": "pipe-2", "name": "other-pipe", "outputs": [{"name": "news_out_bar"}]},
         ],
     }
     stub = _StubCalls(
         responses={"get_workspace_context": ctx},
         failures={
-            ("delete_data_type", "type-1"): (
-                "409: Cannot delete DataType: one or more panels are bound to it"
+            ("delete_pipeline", "pipe-1"): (
+                "409: Cannot delete pipeline: one or more panels are bound to its Output"
             ),
         },
     )
@@ -50,9 +51,9 @@ def test_cleanup_news_resources_skips_type_still_bound_to_a_panel():
 
     result = asyncio.run(client.cleanup_news_resources())
 
-    assert result == {"sources": 1, "types": 1}
-    deleted_types = [a["dataTypeId"] for t, a in stub.calls if t == "delete_data_type"]
-    assert deleted_types == ["type-1", "type-2"]  # both attempted; only type-2 counted
+    assert result == {"sources": 1, "pipelines": 1}
+    deleted_pipelines = [a["pipelineId"] for t, a in stub.calls if t == "delete_pipeline"]
+    assert deleted_pipelines == ["pipe-1", "pipe-2"]  # both attempted; only pipe-2 counted
 
 
 def test_cleanup_news_resources_skips_source_that_fails_to_delete():
@@ -61,7 +62,7 @@ def test_cleanup_news_resources_skips_source_that_fails_to_delete():
             {"id": "src-1", "name": "news-overview-src-foo"},
             {"id": "src-2", "name": "news-overview-src-bar"},
         ],
-        "dataTypes": [],
+        "pipelines": [],
     }
     stub = _StubCalls(
         responses={"get_workspace_context": ctx},
@@ -71,7 +72,7 @@ def test_cleanup_news_resources_skips_source_that_fails_to_delete():
 
     result = asyncio.run(client.cleanup_news_resources())
 
-    assert result == {"sources": 1, "types": 0}
+    assert result == {"sources": 1, "pipelines": 0}
     deleted_sources = [a["dataSourceId"] for t, a in stub.calls if t == "delete_data_source"]
     assert deleted_sources == ["src-1", "src-2"]  # both attempted; only src-2 counted
 
@@ -79,14 +80,14 @@ def test_cleanup_news_resources_skips_source_that_fails_to_delete():
 def test_cleanup_news_resources_all_succeed():
     ctx = {
         "dataSources": [{"id": "src-1", "name": "news-overview-src-foo"}],
-        "dataTypes": [{"id": "type-1", "name": "news_out_foo"}],
+        "pipelines": [{"id": "pipe-1", "name": "news-overview-pipe-foo", "outputs": []}],
     }
     stub = _StubCalls(responses={"get_workspace_context": ctx})
     client = _client(stub)
 
     result = asyncio.run(client.cleanup_news_resources())
 
-    assert result == {"sources": 1, "types": 1}
+    assert result == {"sources": 1, "pipelines": 1}
 
 
 def test_create_csv_source_returns_id():
@@ -100,32 +101,35 @@ def test_create_csv_source_returns_id():
                             {"name": "news-proj-helio-src-completed", "content": "id,title\n1,A\n"})]
 
 
-def test_build_shape_pipeline_creates_runs_and_returns_output_type():
+def test_build_shape_pipeline_creates_expands_runs_and_returns_output_id():
     stub = _StubCalls(responses={
-        "create_pipeline_from_shape": {"id": "pipe-1"},
-        "run_pipeline": {"outputDataTypeId": "type-1"},
+        "create_pipeline": {"id": "pipe-1"},
+        "add_outputs_from_shape": {"output": {"id": "output-1"}},
     })
     client = _client(stub)
 
     result = asyncio.run(client.build_shape_pipeline(
         "src-99", "news-proj-helio", "velocity", "time-series",
         {"timeField": "completedAt", "granularity": "week",
-         "measures": [{"fn": "count", "field": "id", "alias": "ticketsCompleted"}]}))
+         "measures": [{"fn": "count", "field": "id", "alias": "ticketsCompleted"}]},
+        output_kind="chart"))
 
-    assert result == "type-1"
-    shape_call = next(c for t, c in stub.calls if t == "create_pipeline_from_shape")
+    assert result == "output-1"
+    create_call = next(c for t, c in stub.calls if t == "create_pipeline")
+    assert create_call["source"] == {"sourceId": "src-99"}
+    shape_call = next(c for t, c in stub.calls if t == "add_outputs_from_shape")
+    assert shape_call["pipelineId"] == "pipe-1"
     assert shape_call["shapeId"] == "time-series"
-    assert shape_call["sourceDataSourceId"] == "src-99"
-    assert shape_call["outputDataTypeName"] == "news_out_proj_helio_velocity"
+    assert shape_call["outputName"] == "news_out_proj_helio_velocity"
+    assert shape_call["outputKind"] == "chart"
     assert shape_call["params"]["timeField"] == "completedAt"
     run_call = next(c for t, c in stub.calls if t == "run_pipeline")
     assert run_call == {"pipelineId": "pipe-1"}
 
 
-def test_build_steps_pipeline_creates_adds_steps_runs_and_returns_output_type():
+def test_build_steps_pipeline_creates_with_inline_steps_and_returns_output_id():
     stub = _StubCalls(responses={
-        "create_pipeline": {"id": "pipe-2"},
-        "run_pipeline": {"outputDataTypeId": "type-2"},
+        "create_pipeline": {"id": "pipe-2", "outputs": [{"id": "output-2"}]},
     })
     client = _client(stub)
     steps = [
@@ -135,42 +139,46 @@ def test_build_steps_pipeline_creates_adds_steps_runs_and_returns_output_type():
                                           "aggregations": [{"alias": "openBugCount", "field": "id", "fn": "count"}]}},
     ]
 
-    result = asyncio.run(client.build_steps_pipeline("src-100", "news-proj-helio", "openbugs", steps))
+    result = asyncio.run(client.build_steps_pipeline(
+        "src-100", "news-proj-helio", "openbugs", steps, output_kind="metric"))
 
-    assert result == "type-2"
+    assert result == "output-2"
     create_call = next(c for t, c in stub.calls if t == "create_pipeline")
-    assert create_call["sourceDataSourceId"] == "src-100"
-    assert create_call["outputDataTypeName"] == "news_out_proj_helio_openbugs"
-    step_calls = [c for t, c in stub.calls if t == "add_pipeline_step"]
-    assert len(step_calls) == 2
-    assert step_calls[0] == {"pipelineId": "pipe-2", "type": "filter", "config": steps[0]["config"]}
-    assert step_calls[1] == {"pipelineId": "pipe-2", "type": "aggregate", "config": steps[1]["config"]}
+    assert create_call["source"] == {"sourceId": "src-100"}
+    assert create_call["steps"] == [
+        {"clientId": "step0", "type": "filter", "config": steps[0]["config"]},
+        {"clientId": "step1", "type": "aggregate", "config": steps[1]["config"]},
+    ]
+    assert create_call["outputs"] == [{
+        "kind": "metric", "name": "news_out_proj_helio_openbugs", "nodeStepClientId": "step1",
+    }]
     run_call = next(c for t, c in stub.calls if t == "run_pipeline")
     assert run_call == {"pipelineId": "pipe-2"}
 
 
 def test_bind_new_panel_metric_no_appearance_call():
-    stub = _StubCalls(responses={"create_panel": {"id": "panel-1"}})
+    stub = _StubCalls(responses={"place_outputs": [{"id": "panel-1"}]})
     client = _client(stub)
 
     result = asyncio.run(client.bind_new_panel(
-        "dash-1", "Avg Cycle Time", "metric", "type-1", {"value": "avgCycleTimeDays"}))
+        "dash-1", "Avg Cycle Time", "metric", "output-1", {"value": "avgCycleTimeDays"}))
 
     assert result == "panel-1"
-    create_call = next(c for t, c in stub.calls if t == "create_panel")
-    assert create_call == {"dashboardId": "dash-1", "type": "metric", "title": "Avg Cycle Time"}
-    bind_call = next(c for t, c in stub.calls if t == "bind_panel")
-    assert bind_call == {"panelId": "panel-1", "dataTypeId": "type-1",
-                          "fieldMapping": {"value": "avgCycleTimeDays"}, "panelType": "metric"}
+    update_call = next(c for t, c in stub.calls if t == "update_output")
+    assert update_call == {"outputId": "output-1",
+                            "config": {"fieldMapping": {"value": "avgCycleTimeDays"}}}
+    place_call = next(c for t, c in stub.calls if t == "place_outputs")
+    assert place_call == {"dashboardId": "dash-1",
+                           "items": [{"outputId": "output-1", "title": "Avg Cycle Time"}]}
     assert not any(t == "update_panel_appearance" for t, _ in stub.calls)
 
 
 def test_bind_new_panel_chart_applies_appearance():
-    stub = _StubCalls(responses={"create_panel": {"id": "panel-2"}})
+    stub = _StubCalls(responses={"place_outputs": [{"id": "panel-2"}]})
     client = _client(stub)
 
     asyncio.run(client.bind_new_panel(
-        "dash-1", "Velocity", "chart", "type-2",
+        "dash-1", "Velocity", "chart", "output-2",
         {"xAxis": "completedAt", "yAxis": "ticketsCompleted"}, chart_type="bar"))
 
     appearance_call = next(c for t, c in stub.calls if t == "update_panel_appearance")

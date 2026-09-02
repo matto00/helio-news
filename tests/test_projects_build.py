@@ -32,13 +32,14 @@ class _FakeHelio:
         self.csv_sources_created.append((name, content))
         return f"src-{len(self.csv_sources_created)}"
 
-    async def build_shape_pipeline(self, source_id, prefix, key, shape_id, params):
-        self.shape_pipelines_built.append((source_id, prefix, key, shape_id, params))
-        return f"type-shape-{len(self.shape_pipelines_built)}"
+    async def build_shape_pipeline(self, source_id, prefix, key, shape_id, params, *,
+                                   output_kind="table"):
+        self.shape_pipelines_built.append((source_id, prefix, key, shape_id, params, output_kind))
+        return f"output-shape-{len(self.shape_pipelines_built)}"
 
-    async def build_steps_pipeline(self, source_id, prefix, key, steps):
-        self.steps_pipelines_built.append((source_id, prefix, key, steps))
-        return f"type-steps-{len(self.steps_pipelines_built)}"
+    async def build_steps_pipeline(self, source_id, prefix, key, steps, *, output_kind="table"):
+        self.steps_pipelines_built.append((source_id, prefix, key, steps, output_kind))
+        return f"output-steps-{len(self.steps_pipelines_built)}"
 
     async def bind_new_panel(self, dashboard_id, title, panel_type, output_type_id, mapping,
                              *, config=None, chart_type=None):

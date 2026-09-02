@@ -107,7 +107,7 @@ def test_apply_plan_folds_project_names_into_board_ids_and_calls_build_project_b
             self.cleared = []
 
         async def tool_names(self):
-            return {"delete_data_source", "delete_dashboard", "delete_data_type", "delete_panel"}
+            return {"delete_data_source", "delete_dashboard", "delete_pipeline", "delete_panel"}
 
         async def ensure_dashboard(self, name):
             self.ensured.append(name)
@@ -171,7 +171,7 @@ def test_apply_plan_skips_project_items_missing_name():
             self.ensured = []
 
         async def tool_names(self):
-            return {"delete_data_source", "delete_dashboard", "delete_data_type", "delete_panel"}
+            return {"delete_data_source", "delete_dashboard", "delete_pipeline", "delete_panel"}
 
         async def ensure_dashboard(self, name):
             self.ensured.append(name)
@@ -224,7 +224,7 @@ def test_apply_plan_calls_build_project_boards_immediately_after_cleanup():
 
     class _FakeHelio:
         async def tool_names(self):
-            return {"delete_data_source", "delete_dashboard", "delete_data_type", "delete_panel"}
+            return {"delete_data_source", "delete_dashboard", "delete_pipeline", "delete_panel"}
 
         async def ensure_dashboard(self, name):
             return f"dash-{name}"

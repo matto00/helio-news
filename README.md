@@ -136,7 +136,7 @@ ollama pull gemma4:e4b
 ```
 
 The helio MCP server must include the **delete tools** (`delete_data_source`,
-`delete_dashboard`, `delete_data_type`, `delete_panel`, …) — the daily
+`delete_dashboard`, `delete_pipeline`, `delete_panel`, …) — the daily
 create-fresh / delete-old cleanup depends on them. Build it with
 `cd ../helio/helio-mcp && npm run build`.
 
@@ -191,11 +191,13 @@ Schedule it: see `deploy/news.service` (installs as a systemd *user* timer).
   `{"line": {...}}`, not a flat `{...}`. A flat dict is **silently dropped**
   (no error, options just don't apply). `SourceData.panel_config()` nests them
   under `chart_type` for you.
-- **`collection` / `timeline` panels: use `create_panel`, not the proposal
-  path.** The built `dist` MCP's `apply_proposal` schema still enumerates
-  `divider` but not `collection`/`timeline` (HEAD source has them — schema drift
-  in the deployed build). `facts:numbers` renders as a `collection` of metric
-  tiles via `create_panel` + `bind_panel(panelType="collection")`.
+- **`collection` / `timeline` panels: use `place_outputs`, not the proposal
+  path.** `facts:numbers` renders as a `collection` of metric tiles by
+  creating a `collection`-kind Output (`create_pipeline`'s `outputs[]` or
+  `add_output`) and placing it with `place_outputs`. Verify the built `dist`
+  MCP's `apply_proposal` schema actually enumerates `collection`/`timeline`
+  before relying on the proposal path for them — historically it has lagged
+  HEAD source (schema drift in the deployed build).
 - **Image panels are unbound** — `config: {imageUrl, imageFit}`, no source or
   pipeline. `imageFit` ∈ `contain|cover|fill`.
 - **Feeds advertise the smallest image first.** The Guardian lists 140/460/700px
