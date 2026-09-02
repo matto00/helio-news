@@ -313,11 +313,14 @@ class HelioClient:
         return (await self.call("create_dashboard", {"name": name}))["id"]
 
     async def clear_dashboard_panels(self, dashboard_id: str) -> int:
+        """HEL-626: `get_dashboard`'s panels now always carry a stable, real
+        `id` (helio-mcp composes it from the dashboard record + /export
+        snapshot and documents `id` as "the panel's real, non-remapped id" —
+        no more falling back to an export snapshot's remapped `snapshotId`)."""
         dash = await self.get_dashboard(dashboard_id)
         panels = dash.get("panels", []) if isinstance(dash, dict) else []
         for p in panels:
-            # export snapshots expose the panel id as `snapshotId`.
-            pid = p.get("snapshotId") or p.get("id")
+            pid = p.get("id")
             if pid:
                 await self.call("delete_panel", {"panelId": pid})
         return len(panels)
