@@ -96,11 +96,16 @@ def build(arg, panel, story):
         latest, prev = closes[-1], closes[-2]
         return SourceData(
             key=f"stock-{ticker}-metric",
+            # `unit` is a fieldMapping SLOT, so its value must name a real
+            # column (HEL-907 grounds mapping values against the projected
+            # schema) — a bare literal "USD" is a 400. Carry the unit as a
+            # one-value column instead.
             columns=[{"name": "label", "type": T_STR},
                      {"name": "price", "type": T_NUM},
-                     {"name": "change_pct", "type": T_NUM}],
-            rows=[[ticker, round(latest, 2), _pct(latest, prev)]],
-            mapping={"value": "price", "label": "label", "unit": "USD"},
+                     {"name": "change_pct", "type": T_NUM},
+                     {"name": "unit", "type": T_STR}],
+            rows=[[ticker, round(latest, 2), _pct(latest, prev), "USD"]],
+            mapping={"value": "price", "label": "label", "unit": "unit"},
             panel_type="metric",
         )
 
