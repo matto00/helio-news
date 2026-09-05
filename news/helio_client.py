@@ -56,6 +56,29 @@ def _load_pat_env() -> dict[str, str]:
     return env
 
 
+# Output kinds whose binding spec declares NO slots at all — `OutputBindingSpec.Table`
+# and `.Markdown` are both built with empty required AND optional slot vectors, so a
+# table binds every projected column and column *selection* is a display concern
+# (`config.columnOrder`), not a field mapping. Sending any slot key for these kinds
+# is a hard 400 from `validateFieldMapping` ("Valid slots: " — the list is empty).
+SLOTLESS_OUTPUT_KINDS = {"table", "markdown"}
+
+
+def _output_config(panel_type: str, mapping: dict | None, config: dict | None) -> dict:
+    """Build an Output `config`, folding a legacy `columns` mapping into
+    `columnOrder` for the kinds that accept no slots."""
+    cfg = dict(config or {})
+    slots = dict(mapping or {})
+    if panel_type in SLOTLESS_OUTPUT_KINDS:
+        columns = slots.pop("columns", "")
+        if columns and not cfg.get("columnOrder"):
+            cfg["columnOrder"] = [c.strip() for c in columns.split(",") if c.strip()]
+        slots = {}
+    if slots:
+        cfg["fieldMapping"] = slots
+    return cfg
+
+
 class HelioClient:
     """Thin async wrapper over the helio MCP tools, with the helpers run.py needs.
     Use via `async with HelioClient.session(config) as helio:`."""
@@ -127,7 +150,7 @@ class HelioClient:
         # v1.5 subtype config (collection base/layout, chart display options,
         # table density/order) now lives on the Output's own config, alongside
         # fieldMapping — not on the panel.
-        output_config = {**sd.panel_config(), "fieldMapping": sd.mapping}
+        output_config = _output_config(sd.panel_type, sd.mapping, sd.panel_config())
         output_spec = {
             "kind": sd.panel_type,
             "name": _type_name(prefix, sd.key),
@@ -278,7 +301,7 @@ class HelioClient:
         `fieldMapping`/subtype `config` live on the Output itself, so this
         PATCHes the Output (update_output) before placing it, rather than
         PATCHing the panel (the old bind_panel)."""
-        output_config = {**(config or {}), "fieldMapping": mapping}
+        output_config = _output_config(panel_type, mapping, config)
         await self.call("update_output", {"outputId": output_id, "config": output_config})
         placed = await self.call("place_outputs", {
             "dashboardId": dashboard_id,
