@@ -116,7 +116,7 @@ def test_build_shape_pipeline_creates_expands_runs_and_returns_output_id():
 
     assert result == "output-1"
     create_call = next(c for t, c in stub.calls if t == "create_pipeline")
-    assert create_call["source"] == {"sourceId": "src-99"}
+    assert create_call["roots"] == [{"sourceId": "src-99"}]
     shape_call = next(c for t, c in stub.calls if t == "add_outputs_from_shape")
     assert shape_call["pipelineId"] == "pipe-1"
     assert shape_call["shapeId"] == "time-series"
@@ -144,10 +144,11 @@ def test_build_steps_pipeline_creates_with_inline_steps_and_returns_output_id():
 
     assert result == "output-2"
     create_call = next(c for t, c in stub.calls if t == "create_pipeline")
-    assert create_call["source"] == {"sourceId": "src-100"}
+    assert create_call["roots"] == [{"sourceId": "src-100"}]
     assert create_call["steps"] == [
         {"clientId": "step0", "type": "filter", "config": steps[0]["config"]},
-        {"clientId": "step1", "type": "aggregate", "config": steps[1]["config"]},
+        {"clientId": "step1", "type": "aggregate", "config": steps[1]["config"],
+         "parentStepId": "step0"},
     ]
     assert create_call["outputs"] == [{
         "kind": "metric", "name": "news_out_proj_helio_openbugs", "nodeStepClientId": "step1",
@@ -184,3 +185,50 @@ def test_bind_new_panel_chart_applies_appearance():
     appearance_call = next(c for t, c in stub.calls if t == "update_panel_appearance")
     assert appearance_call["panelId"] == "panel-2"
     assert appearance_call["appearance"]["chart"]["chartType"] == "bar"
+
+
+def test_build_bound_panel_sends_roots_array_and_chains_multi_step_transforms():
+    """HEL-913/HEL-914 regression guard. `create_pipeline` takes a non-empty
+    `roots[]` (the scalar `source` was removed outright — the server's zod
+    schema is `additionalProperties: false`, so the old shape is rejected), and
+    a parentless step hangs off the ROOT, not off the previous array element.
+    The monthly-series enricher's aggregate → sort is the real case: unchained,
+    `sort` would sort the raw rows and the Output would never see `avg_value`."""
+
+    class _SD:
+        key = "cpi"
+        columns = [{"name": "month", "type": "string"}, {"name": "value", "type": "number"}]
+        rows = [["2026-01", 1.0]]
+        mapping = {"xAxis": "month", "yAxis": "avg_value"}
+        panel_type = "chart"
+        chart_type = "line"
+
+        def pipeline_steps(self):
+            return [
+                {"type": "aggregate", "config": {"groupBy": [{"name": "month", "type": "string"}]}},
+                {"type": "sort", "config": {"sortBy": [{"field": "month", "direction": "asc"}]}},
+            ]
+
+        def panel_config(self):
+            return {}
+
+    stub = _StubCalls(responses={
+        "create_data_source": {"id": "src-7"},
+        "create_pipeline": {"id": "pipe-7", "outputs": [{"id": "output-7"}]},
+        "place_outputs": [{"id": "panel-7"}],
+    })
+    client = _client(stub)
+
+    panel_id = asyncio.run(client.build_bound_panel("dash-1", "news-overview", "CPI", _SD()))
+
+    assert panel_id == "panel-7"
+    create_call = next(c for t, c in stub.calls if t == "create_pipeline")
+    assert "source" not in create_call
+    assert create_call["roots"] == [{"sourceId": "src-7"}]
+    assert create_call["steps"] == [
+        {"clientId": "step0", "type": "aggregate",
+         "config": {"groupBy": [{"name": "month", "type": "string"}]}},
+        {"clientId": "step1", "type": "sort", "parentStepId": "step0",
+         "config": {"sortBy": [{"field": "month", "direction": "asc"}]}},
+    ]
+    assert create_call["outputs"][0]["nodeStepClientId"] == "step1"

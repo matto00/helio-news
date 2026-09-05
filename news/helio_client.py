@@ -123,10 +123,7 @@ class HelioClient:
         # Apply the enricher's transform steps (default: an identity select so the
         # pipeline has explicit output columns). A series enricher supplies real
         # steps here — e.g. groupBy month + avg — so helio does the aggregation.
-        steps = [
-            {"clientId": f"step{i}", "type": step["type"], "config": step.get("config", {})}
-            for i, step in enumerate(sd.pipeline_steps())
-        ]
+        steps = _chain(sd.pipeline_steps())
         # v1.5 subtype config (collection base/layout, chart display options,
         # table density/order) now lives on the Output's own config, alongside
         # fieldMapping — not on the panel.
@@ -140,7 +137,7 @@ class HelioClient:
             output_spec["nodeStepClientId"] = steps[-1]["clientId"]
         pipe = await self.call("create_pipeline", {
             "name": f"{prefix}-pipe-{sd.key}",
-            "source": {"sourceId": source_id},
+            "roots": [{"sourceId": source_id}],
             "steps": steps,
             "outputs": [output_spec],
         })
@@ -235,7 +232,7 @@ class HelioClient:
         pipeline, same division of labor as build_bound_panel's chain."""
         pipe = await self.call("create_pipeline", {
             "name": f"{prefix}-pipe-{key}",
-            "source": {"sourceId": source_id},
+            "roots": [{"sourceId": source_id}],
         })
         expanded = await self.call("add_outputs_from_shape", {
             "pipelineId": pipe["id"], "shapeId": shape_id, "params": params,
@@ -251,13 +248,10 @@ class HelioClient:
         Output id. HEL-940/HEL-910: single-call create_pipeline now takes
         `steps`/`outputs` inline; `output_kind` is fixed at creation (see
         build_shape_pipeline's docstring for why it can't be patched later)."""
-        client_steps = [
-            {"clientId": f"step{i}", "type": step["type"], "config": step["config"]}
-            for i, step in enumerate(steps)
-        ]
+        client_steps = _chain(steps)
         pipe = await self.call("create_pipeline", {
             "name": f"{prefix}-pipe-{key}",
-            "source": {"sourceId": source_id},
+            "roots": [{"sourceId": source_id}],
             "steps": client_steps,
             "outputs": [{
                 "kind": output_kind,
@@ -371,6 +365,31 @@ class HelioClient:
                     print(f"· cleanup: skipped source {s['id']} ({name}): {e}",
                           file=sys.stderr)
         return deleted
+
+
+def _chain(steps: list[dict]) -> list[dict]:
+    """Turn an ordered list of `{type, config}` transforms into create_pipeline's
+    `steps[]` shape, explicitly CHAINED.
+
+    HEL-913/HEL-914: in the transactional create-pipeline request a step whose
+    `parentStepId` is absent hangs off the pipeline ROOT, not off the previous
+    step in the array (`PipelineService.buildStepsAction`). Leaving it absent for
+    every step therefore builds N parallel one-step branches instead of one
+    N-step trunk — e.g. the monthly-series enricher's aggregate → sort would sort
+    the RAW rows and never see `avg_value`. Each step past the first names its
+    predecessor's `clientId`.
+    """
+    chained: list[dict] = []
+    for i, step in enumerate(steps):
+        spec = {
+            "clientId": f"step{i}",
+            "type": step["type"],
+            "config": step.get("config", {}),
+        }
+        if i:
+            spec["parentStepId"] = f"step{i - 1}"
+        chained.append(spec)
+    return chained
 
 
 def _type_name(prefix: str, key: str) -> str:
