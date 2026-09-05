@@ -118,7 +118,7 @@ def test_apply_plan_folds_project_names_into_board_ids_and_calls_build_project_b
             return 0
 
         async def cleanup_news_resources(self):
-            return {"sources": 0, "types": 0}
+            return {"sources": 0, "pipelines": 0}
 
     fake_helio = _FakeHelio()
 
@@ -181,7 +181,7 @@ def test_apply_plan_skips_project_items_missing_name():
             return 0
 
         async def cleanup_news_resources(self):
-            return {"sources": 0, "types": 0}
+            return {"sources": 0, "pipelines": 0}
 
     fake_helio = _FakeHelio()
 
@@ -234,7 +234,7 @@ def test_apply_plan_calls_build_project_boards_immediately_after_cleanup():
 
         async def cleanup_news_resources(self):
             calls.append("cleanup")
-            return {"sources": 0, "types": 0}
+            return {"sources": 0, "pipelines": 0}
 
     fake_helio = _FakeHelio()
 

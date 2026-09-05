@@ -358,7 +358,7 @@ async def apply_plan(plan: DayPlan, articles: list, config: dict, curation: dict
                 cleared += await helio.clear_dashboard_panels(did)
             gone = await helio.cleanup_news_resources()
             print(f"· cleanup: {cleared} panels, {gone['sources']} sources, "
-                  f"{gone['types']} types removed", file=sys.stderr)
+                  f"{gone['pipelines']} pipelines removed", file=sys.stderr)
 
         # Project-pulse boards are independent of the news pipeline (no shared
         # data, no shared model passes) — build them right after cleanup so a
