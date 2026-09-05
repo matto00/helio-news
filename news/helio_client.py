@@ -149,7 +149,7 @@ class HelioClient:
             "dashboardId": dashboard_id,
             "items": [{"outputId": output_id, "title": title}],
         })
-        panel_id = placed[0]["id"]
+        panel_id = placed["panels"][0]["id"]
         chart_type = sd.chart_type if sd.panel_type == "chart" else None
         await self._apply_appearance(panel_id, chart_type=chart_type,
                                      background=background)
@@ -284,7 +284,7 @@ class HelioClient:
             "dashboardId": dashboard_id,
             "items": [{"outputId": output_id, "title": title}],
         })
-        panel_id = placed[0]["id"]
+        panel_id = placed["panels"][0]["id"]
         if chart_type:
             await self._apply_appearance(panel_id, chart_type=chart_type)
         return panel_id

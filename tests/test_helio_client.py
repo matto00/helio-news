@@ -158,7 +158,7 @@ def test_build_steps_pipeline_creates_with_inline_steps_and_returns_output_id():
 
 
 def test_bind_new_panel_metric_no_appearance_call():
-    stub = _StubCalls(responses={"place_outputs": [{"id": "panel-1"}]})
+    stub = _StubCalls(responses={"place_outputs": {"panels": [{"id": "panel-1"}]}})
     client = _client(stub)
 
     result = asyncio.run(client.bind_new_panel(
@@ -175,7 +175,7 @@ def test_bind_new_panel_metric_no_appearance_call():
 
 
 def test_bind_new_panel_chart_applies_appearance():
-    stub = _StubCalls(responses={"place_outputs": [{"id": "panel-2"}]})
+    stub = _StubCalls(responses={"place_outputs": {"panels": [{"id": "panel-2"}]}})
     client = _client(stub)
 
     asyncio.run(client.bind_new_panel(
@@ -215,7 +215,7 @@ def test_build_bound_panel_sends_roots_array_and_chains_multi_step_transforms():
     stub = _StubCalls(responses={
         "create_data_source": {"id": "src-7"},
         "create_pipeline": {"id": "pipe-7", "outputs": [{"id": "output-7"}]},
-        "place_outputs": [{"id": "panel-7"}],
+        "place_outputs": {"panels": [{"id": "panel-7"}]},
     })
     client = _client(stub)
 
