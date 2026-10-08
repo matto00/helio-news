@@ -40,7 +40,7 @@ def build(arg, panel, story):
 
     # v1.5: a collection of metric tiles (one per verified figure) reads far
     # better than a 2-column table — each figure gets its own big-value card.
-    # baseType/layout are set at create time and survive the bind merge-patch;
+    # layout is set at create time and survive the bind merge-patch;
     # the bind maps each row into the metric slots {label, value}.
     return SourceData(
         key=f"facts-{story.slug}-numbers",
@@ -49,7 +49,6 @@ def build(arg, panel, story):
         rows=rows,
         mapping={"label": "metric", "value": "value"},
         panel_type="collection",
-        base_type="metric",
         layout="grid",
     )
 
