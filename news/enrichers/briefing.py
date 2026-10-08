@@ -104,7 +104,6 @@ def recap(plan, config):
             rows=[[e.day, e.headline, e.importance] for e in top],
             mapping={"columns": "date,headline,importance"},
             panel_type="table",
-            density="condensed",
             column_order=["date", "headline", "importance"],
         )
     except Exception:

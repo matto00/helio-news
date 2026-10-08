@@ -45,7 +45,6 @@ def build(arg, panel, story):
                 rows=rows,
                 mapping={"columns": "outlet,articles"},
                 panel_type="table",
-                density="condensed",
                 column_order=["outlet", "articles"],
             )
         return SourceData(

@@ -147,8 +147,8 @@ class HelioClient:
         # pipeline has explicit output columns). A series enricher supplies real
         # steps here — e.g. groupBy month + avg — so helio does the aggregation.
         steps = _chain(sd.pipeline_steps())
-        # v1.5 subtype config (collection base/layout, chart display options,
-        # table density/order) now lives on the Output's own config, alongside
+        # v1.5 subtype config (collection layout, chart display options,
+        # table column order) now lives on the Output's own config, alongside
         # fieldMapping — not on the panel.
         output_config = _output_config(sd.panel_type, sd.mapping, sd.panel_config())
         output_spec = {

@@ -38,6 +38,5 @@ def build(arg, panel, story):
         rows=rows,
         mapping={"columns": "date,headline,importance"},
         panel_type="table",
-        density="condensed",
         column_order=["date", "headline", "importance"],
     )

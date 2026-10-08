@@ -43,9 +43,7 @@ class SourceData:
     # enricher sets just the ones that apply to its own shape.
     chart_options: dict | None = None          # chart: config.chartOptions (per chart type)
     annotation: str | None = None              # chart: config.annotation — source-attribution footnote
-    base_type: str | None = None               # collection: config.baseType (e.g. "metric")
     layout: str | None = None                  # collection: config.layout (grid|list)
-    density: str | None = None                 # table: config.density (condensed|normal|spacious)
     column_order: list[str] | None = None      # table: config.columnOrder (visible cols, in order)
 
     # Pipeline transform steps to apply over the source, in order, as
@@ -67,12 +65,12 @@ class SourceData:
 
     def panel_config(self) -> dict:
         """The Output `config` for this panel_type — v1.5 subtype config
-        (collection base/layout, chart display options + annotation, table
-        density/order). Empty when nothing applies (metric, or an unadorned
+        (collection layout, chart display options + annotation, table column
+        order). Only keys in helio's per-kind Output config allowlist are
+        emitted (OutputConfigValidation.scala rejects the rest with 400). Empty when nothing applies (metric, or an unadorned
         chart), so the caller can omit `config` entirely."""
         cfg: dict = {}
         if self.panel_type == "collection":
-            cfg["baseType"] = self.base_type or "metric"
             cfg["layout"] = self.layout or "grid"
         elif self.panel_type == "chart":
             # chartOptions is keyed BY CHART TYPE ({bar:{…}} / {line:{…}}); a flat
@@ -83,8 +81,6 @@ class SourceData:
             if self.annotation:
                 cfg["annotation"] = self.annotation
         elif self.panel_type == "table":
-            if self.density:
-                cfg["density"] = self.density
             if self.column_order:
                 cfg["columnOrder"] = self.column_order
         return cfg
